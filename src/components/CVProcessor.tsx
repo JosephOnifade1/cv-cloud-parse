@@ -13,8 +13,20 @@ import { ProcessingLog } from './ProcessingLog';
 import { Upload, FileText, Download, Settings, Activity } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 
-// Configure PDF.js worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+// Configure PDF.js worker with multiple fallbacks
+if (typeof window !== 'undefined') {
+  try {
+    // Try using unpkg CDN first
+    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.js`;
+  } catch (error) {
+    try {
+      // Fallback to local worker stub
+      pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.js';
+    } catch (fallbackError) {
+      console.warn('PDF.js worker setup failed completely', error, fallbackError);
+    }
+  }
+}
 
 interface ExtractedData {
   filename: string;
@@ -82,25 +94,72 @@ export const CVProcessor: React.FC = () => {
         try {
           const typedarray = new Uint8Array(e.target?.result as ArrayBuffer);
           
-          // Load the PDF document
-          const pdf = await pdfjsLib.getDocument(typedarray).promise;
+          // Try multiple approaches for loading PDF
+          let pdf;
+          try {
+            // First approach: with optimized settings
+            const loadingTask = pdfjsLib.getDocument({
+              data: typedarray,
+              useWorkerFetch: false,
+              isEvalSupported: false,
+              disableAutoFetch: true,
+              disableStream: true,
+              disableRange: true,
+              stopAtErrors: true
+            });
+            
+            pdf = await loadingTask.promise;
+          } catch (workerError) {
+            console.warn('PDF.js with worker failed, trying simplified approach:', workerError);
+            
+            // Second approach: try with minimal options
+            const loadingTask = pdfjsLib.getDocument({
+              data: typedarray,
+              useWorkerFetch: false,
+              isEvalSupported: false,
+              disableAutoFetch: true,
+              disableStream: true,
+              disableRange: true,
+              stopAtErrors: false
+            });
+            
+            pdf = await loadingTask.promise;
+          }
+          
           let fullText = '';
           
           // Extract text from each page
           for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-            const page = await pdf.getPage(pageNum);
-            const textContent = await page.getTextContent();
-            
-            // Combine text items from the page
-            const pageText = textContent.items
-              .map((item: any) => item.str)
-              .join(' ');
-            
-            fullText += pageText + '\n';
+            try {
+              const page = await pdf.getPage(pageNum);
+              const textContent = await page.getTextContent();
+              
+              // Combine text items from the page with proper spacing
+              const pageText = textContent.items
+                .map((item: any) => {
+                  if (item.str && typeof item.str === 'string') {
+                    return item.str;
+                  }
+                  return '';
+                })
+                .filter(str => str.trim().length > 0)
+                .join(' ');
+              
+              fullText += pageText + '\n';
+            } catch (pageError) {
+              console.warn(`Failed to extract text from page ${pageNum}:`, pageError);
+              // Continue with other pages
+            }
           }
           
-          resolve(fullText.trim());
+          if (fullText.trim().length === 0) {
+            reject(new Error('No text content found in PDF. The file might be an image-based PDF or corrupted.'));
+          } else {
+            resolve(fullText.trim());
+          }
+          
         } catch (error) {
+          console.error('PDF extraction error:', error);
           reject(new Error(`Failed to extract text from PDF: ${error instanceof Error ? error.message : 'Unknown error'}`));
         }
       };
