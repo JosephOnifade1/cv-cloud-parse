@@ -43,6 +43,11 @@ export const CVProcessor: React.FC = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [stats, setStats] = useState<ProcessingStats>({ total: 0, processed: 0, successful: 0, failed: 0 });
   const [logs, setLogs] = useState<string[]>([]);
+  const [dropboxConnection, setDropboxConnection] = useState<{
+    connected: boolean;
+    userInfo?: any;
+    selectedFileCount: number;
+  }>({ connected: false, selectedFileCount: 0 });
   const [extractionSettings, setExtractionSettings] = useState({
     extractName: true,
     extractEmail: true,
@@ -352,7 +357,11 @@ export const CVProcessor: React.FC = () => {
           </TabsList>
 
           <TabsContent value="upload" className="space-y-6">
-            <FileUploader onFilesSelected={handleFilesSelected} files={files} />
+            <FileUploader 
+              onFilesSelected={handleFilesSelected} 
+              files={files} 
+              onConnectionChange={setDropboxConnection}
+            />
             
             {files.length > 0 && (
               <Card className="bg-gradient-card shadow-lg border-0">

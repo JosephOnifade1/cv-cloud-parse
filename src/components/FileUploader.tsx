@@ -1,20 +1,33 @@
-import React, { useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Upload, File, X, FileText } from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Upload, File, X, Trash2, Cloud, HardDrive } from 'lucide-react';
+import { DropboxIntegration } from './DropboxIntegration';
 import { cn } from '@/lib/utils';
 
 interface FileUploaderProps {
   onFilesSelected: (files: File[]) => void;
   files: File[];
+  onConnectionChange?: (status: { connected: boolean; userInfo?: any; selectedFileCount: number }) => void;
 }
 
-export const FileUploader: React.FC<FileUploaderProps> = ({ onFilesSelected, files }) => {
+export const FileUploader: React.FC<FileUploaderProps> = ({ onFilesSelected, files, onConnectionChange }) => {
+  const [activeTab, setActiveTab] = useState('local');
+  
+  const handleLocalFilesSelected = (newFiles: File[]) => {
+    onFilesSelected([...files, ...newFiles]);
+  };
+
+  const handleDropboxFilesSelected = (dropboxFiles: File[]) => {
+    onFilesSelected([...files, ...dropboxFiles]);
+  };
+
   const onDrop = useCallback((acceptedFiles: File[]) => {
     const pdfFiles = acceptedFiles.filter(file => file.type === 'application/pdf');
-    onFilesSelected([...files, ...pdfFiles]);
+    handleLocalFilesSelected(pdfFiles);
   }, [files, onFilesSelected]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -44,64 +57,66 @@ export const FileUploader: React.FC<FileUploaderProps> = ({ onFilesSelected, fil
 
   return (
     <div className="space-y-6">
-      {/* Dropzone */}
-      <Card className="bg-gradient-card shadow-lg border-0">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Upload className="h-5 w-5" />
-            Upload PDF Files
-          </CardTitle>
+      {/* File Source Selector */}
+      <Card className="bg-gradient-card shadow-card">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-lg">File Source</CardTitle>
           <CardDescription>
-            Drag and drop PDF files here, or click to browse. Multiple files supported.
+            Choose where to upload your PDF files from
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div
-            {...getRootProps()}
-            className={cn(
-              "border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-all duration-200",
-              isDragActive 
-                ? "border-primary bg-primary/5 scale-[1.02]" 
-                : "border-border hover:border-primary/50 hover:bg-muted/50"
-            )}
-          >
-            <input {...getInputProps()} />
-            <div className="space-y-4">
-              <div className="flex justify-center">
-                <div className="p-4 rounded-full bg-primary/10">
-                  <FileText className="h-8 w-8 text-primary" />
-                </div>
+          <Tabs value={activeTab} onValueChange={setActiveTab}>
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="local" className="flex items-center gap-2">
+                <HardDrive className="h-4 w-4" />
+                Local Upload
+              </TabsTrigger>
+              <TabsTrigger value="dropbox" className="flex items-center gap-2">
+                <Cloud className="h-4 w-4" />
+                Dropbox
+              </TabsTrigger>
+            </TabsList>
+            
+            <TabsContent value="local" className="mt-4">
+              <div
+                {...getRootProps()}
+                className={cn(
+                  "border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-all duration-200",
+                  isDragActive 
+                    ? "border-primary bg-primary/5 scale-[1.02]" 
+                    : "border-border hover:border-primary/50 hover:bg-muted/50"
+                )}
+              >
+                <input {...getInputProps()} />
+                <Upload className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
+                <h3 className="text-lg font-semibold text-foreground mb-2">
+                  {isDragActive ? 'Drop files here' : 'Upload PDF Files'}
+                </h3>
+                <p className="text-muted-foreground mb-4">
+                  {isDragActive
+                    ? 'Release to upload files'
+                    : 'Drag and drop PDF files here, or click to select files'}
+                </p>
+                <Button variant="outline" type="button">
+                  Browse Files
+                </Button>
               </div>
-              
-              {isDragActive ? (
-                <div>
-                  <p className="text-lg font-medium text-primary">Drop the files here!</p>
-                  <p className="text-sm text-muted-foreground">Release to upload your PDF files</p>
-                </div>
-              ) : (
-                <div>
-                  <p className="text-lg font-medium">Drag & drop PDF files here</p>
-                  <p className="text-sm text-muted-foreground mb-4">
-                    Or click to select files from your computer
-                  </p>
-                  <Button variant="outline" size="lg">
-                    <Upload className="h-4 w-4 mr-2" />
-                    Choose Files
-                  </Button>
-                </div>
-              )}
-              
-              <div className="text-xs text-muted-foreground">
-                Supported formats: PDF • Max size: 5MB per file
-              </div>
-            </div>
-          </div>
+            </TabsContent>
+            
+            <TabsContent value="dropbox" className="mt-4">
+              <DropboxIntegration 
+                onFilesSelected={handleDropboxFilesSelected}
+                onConnectionChange={onConnectionChange}
+              />
+            </TabsContent>
+          </Tabs>
         </CardContent>
       </Card>
 
       {/* File List */}
       {files.length > 0 && (
-        <Card className="bg-gradient-card shadow-lg border-0">
+        <Card className="bg-gradient-card shadow-card">
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
               <CardTitle>Selected Files</CardTitle>
@@ -110,6 +125,7 @@ export const FileUploader: React.FC<FileUploaderProps> = ({ onFilesSelected, fil
               </CardDescription>
             </div>
             <Button variant="outline" size="sm" onClick={clearAll}>
+              <Trash2 className="h-4 w-4 mr-2" />
               Clear All
             </Button>
           </CardHeader>
