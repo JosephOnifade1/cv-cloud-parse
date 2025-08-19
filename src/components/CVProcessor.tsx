@@ -13,41 +13,60 @@ import { ProcessingLog } from './ProcessingLog';
 import { Upload, FileText, Download, Settings, Activity } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 
-// Configure PDF.js worker with multiple fallbacks and worker-less mode
-const setupPDFWorker = async () => {
-  if (typeof window === 'undefined') return;
+// Configure PDF.js worker with synchronous fallback handling
+let isWorkerSetup = false;
+let workerSetupPromise: Promise<void> | null = null;
 
-  const workerUrls = [
-    `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.js`,
-    `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.js`,
-    `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.js`,
-    '/pdf.worker.js'
-  ];
+const setupPDFWorker = () => {
+  if (typeof window === 'undefined') return Promise.resolve();
+  if (workerSetupPromise) return workerSetupPromise;
 
-  let workerConfigured = false;
+  workerSetupPromise = (async () => {
+    const workerUrls = [
+      `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.js`,
+      `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.js`,
+      `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.js`,
+      '/pdf.worker.js'
+    ];
 
-  // Try each worker URL
-  for (const url of workerUrls) {
-    try {
-      const response = await fetch(url, { method: 'HEAD' });
-      if (response.ok) {
-        pdfjsLib.GlobalWorkerOptions.workerSrc = url;
-        workerConfigured = true;
-        console.log(`PDF.js worker configured with: ${url}`);
-        break;
+    let workerConfigured = false;
+
+    // Try each worker URL with timeout
+    for (const url of workerUrls) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000); // 3 second timeout
+        
+        const response = await fetch(url, { 
+          method: 'HEAD',
+          signal: controller.signal
+        });
+        
+        clearTimeout(timeoutId);
+        
+        if (response.ok) {
+          pdfjsLib.GlobalWorkerOptions.workerSrc = url;
+          workerConfigured = true;
+          console.log(`PDF.js worker configured with: ${url}`);
+          break;
+        }
+      } catch (error) {
+        console.warn(`Failed to load worker from ${url}:`, error);
       }
-    } catch (error) {
-      console.warn(`Failed to load worker from ${url}:`, error);
     }
-  }
 
-  // If no worker URL works, configure for worker-less mode
-  if (!workerConfigured) {
-    console.warn('All worker URLs failed, configuring worker-less mode');
-    pdfjsLib.GlobalWorkerOptions.workerSrc = null;
-    // @ts-ignore - disableWorker is not in types but exists
-    pdfjsLib.disableWorker = true;
-  }
+    // If no worker URL works, configure for worker-less mode
+    if (!workerConfigured) {
+      console.warn('All worker URLs failed, configuring worker-less mode');
+      pdfjsLib.GlobalWorkerOptions.workerSrc = null;
+      // @ts-ignore - disableWorker is not in types but exists
+      pdfjsLib.disableWorker = true;
+    }
+
+    isWorkerSetup = true;
+  })();
+
+  return workerSetupPromise;
 };
 
 // Initialize worker setup
@@ -113,51 +132,62 @@ export const CVProcessor: React.FC = () => {
   }, [addLog]);
 
   const extractTextFromPDF = async (file: File): Promise<string> => {
+    // Ensure worker is set up before processing
+    await setupPDFWorker();
+
     return new Promise((resolve, reject) => {
+      // Set up timeout for the entire operation
+      const timeoutId = setTimeout(() => {
+        reject(new Error('PDF processing timeout - file may be too large or corrupted'));
+      }, 30000); // 30 second timeout
+
       const reader = new FileReader();
       reader.onload = async (e) => {
         try {
           const typedarray = new Uint8Array(e.target?.result as ArrayBuffer);
           
-          // Try multiple approaches for loading PDF
           let pdf;
+          const loadingTask = pdfjsLib.getDocument({
+            data: typedarray,
+            useWorkerFetch: false,
+            isEvalSupported: false,
+            disableAutoFetch: true,
+            disableStream: true,
+            disableRange: true,
+            stopAtErrors: false,
+            maxImageSize: 1024 * 1024, // 1MB max image size
+            cMapPacked: true,
+            verbosity: 0 // Reduce console spam
+          });
+
+          // Add timeout to PDF loading
+          const loadTimeout = setTimeout(() => {
+            loadingTask.destroy();
+            reject(new Error('PDF loading timeout'));
+          }, 15000);
+
           try {
-            // First approach: with optimized settings
-            const loadingTask = pdfjsLib.getDocument({
-              data: typedarray,
-              useWorkerFetch: false,
-              isEvalSupported: false,
-              disableAutoFetch: true,
-              disableStream: true,
-              disableRange: true,
-              stopAtErrors: true
-            });
-            
             pdf = await loadingTask.promise;
-          } catch (workerError) {
-            console.warn('PDF.js with worker failed, trying simplified approach:', workerError);
-            
-            // Second approach: try with minimal options
-            const loadingTask = pdfjsLib.getDocument({
-              data: typedarray,
-              useWorkerFetch: false,
-              isEvalSupported: false,
-              disableAutoFetch: true,
-              disableStream: true,
-              disableRange: true,
-              stopAtErrors: false
-            });
-            
-            pdf = await loadingTask.promise;
+            clearTimeout(loadTimeout);
+          } catch (loadError) {
+            clearTimeout(loadTimeout);
+            console.error('PDF loading failed:', loadError);
+            throw new Error(`Failed to load PDF: ${loadError instanceof Error ? loadError.message : 'Unknown error'}`);
           }
-          
+
           let fullText = '';
+          const maxPages = Math.min(pdf.numPages, 20); // Limit to 20 pages for performance
           
-          // Extract text from each page
-          for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+          // Extract text from each page with individual timeouts
+          for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
             try {
+              const pageTimeout = setTimeout(() => {
+                throw new Error(`Page ${pageNum} processing timeout`);
+              }, 5000);
+
               const page = await pdf.getPage(pageNum);
               const textContent = await page.getTextContent();
+              clearTimeout(pageTimeout);
               
               // Combine text items from the page with proper spacing
               const pageText = textContent.items
@@ -171,11 +201,19 @@ export const CVProcessor: React.FC = () => {
                 .join(' ');
               
               fullText += pageText + '\n';
+
+              // Clean up page resources
+              page.cleanup();
             } catch (pageError) {
               console.warn(`Failed to extract text from page ${pageNum}:`, pageError);
               // Continue with other pages
             }
           }
+
+          // Clean up PDF resources
+          pdf.cleanup();
+          
+          clearTimeout(timeoutId);
           
           if (fullText.trim().length === 0) {
             reject(new Error('No text content found in PDF. The file might be an image-based PDF or corrupted.'));
@@ -184,11 +222,17 @@ export const CVProcessor: React.FC = () => {
           }
           
         } catch (error) {
+          clearTimeout(timeoutId);
           console.error('PDF extraction error:', error);
           reject(new Error(`Failed to extract text from PDF: ${error instanceof Error ? error.message : 'Unknown error'}`));
         }
       };
-      reader.onerror = () => reject(new Error('Failed to read file'));
+      
+      reader.onerror = () => {
+        clearTimeout(timeoutId);
+        reject(new Error('Failed to read file'));
+      };
+      
       reader.readAsArrayBuffer(file);
     });
   };
@@ -401,6 +445,14 @@ export const CVProcessor: React.FC = () => {
   const processFiles = async () => {
     if (files.length === 0) return;
 
+    // Pre-flight check: ensure worker is ready
+    try {
+      await setupPDFWorker();
+      addLog('PDF.js worker initialized successfully');
+    } catch (error) {
+      addLog('Warning: PDF.js worker setup failed, continuing with worker-less mode');
+    }
+
     setIsProcessing(true);
     setExtractedData([]);
     setStats({ total: files.length, processed: 0, successful: 0, failed: 0 });
@@ -411,14 +463,37 @@ export const CVProcessor: React.FC = () => {
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       setStats(prev => ({ ...prev, currentFile: file.name }));
-      addLog(`Processing file: ${file.name}`);
+      addLog(`Processing file ${i + 1}/${files.length}: ${file.name}`);
 
       try {
-        // Simulate processing time
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
-        const text = await extractTextFromPDF(file);
-        const extractedData = extractDataFromText(text, file.name);
+        // Add per-file timeout wrapper
+        const fileProcessingPromise = (async () => {
+          const text = await extractTextFromPDF(file);
+          
+          if (!text || text.trim().length === 0) {
+            throw new Error('No text content extracted from PDF');
+          }
+          
+          const extractedData = extractDataFromText(text, file.name);
+          
+          // Validate that at least some data was extracted
+          const hasData = extractedData.firstName || extractedData.email || 
+                         extractedData.phone || extractedData.skills?.length;
+          
+          if (!hasData) {
+            extractedData.status = 'error';
+            extractedData.errorMessage = 'No recognizable CV data found in the PDF';
+          }
+          
+          return extractedData;
+        })();
+
+        // Add 45-second timeout per file
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error('File processing timeout (45s)')), 45000);
+        });
+
+        const extractedData = await Promise.race([fileProcessingPromise, timeoutPromise]);
         results.push(extractedData);
 
         setStats(prev => ({
@@ -428,7 +503,11 @@ export const CVProcessor: React.FC = () => {
           failed: prev.failed + (extractedData.status === 'error' ? 1 : 0)
         }));
 
-        addLog(`✓ Successfully processed: ${file.name}`);
+        if (extractedData.status === 'success') {
+          addLog(`✓ Successfully processed: ${file.name}`);
+        } else {
+          addLog(`⚠ Processed with warnings: ${file.name} - ${extractedData.errorMessage}`);
+        }
       } catch (error) {
         const errorData: ExtractedData = {
           filename: file.name,
@@ -446,12 +525,21 @@ export const CVProcessor: React.FC = () => {
         addLog(`✗ Failed to process: ${file.name} - ${errorData.errorMessage}`);
       }
 
+      // Update results after each file for real-time feedback
       setExtractedData([...results]);
+
+      // Small delay between files to prevent overwhelming the browser
+      if (i < files.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
     }
 
     setStats(prev => ({ ...prev, currentFile: undefined }));
     setIsProcessing(false);
-    addLog(`Processing completed. ${results.filter(r => r.status === 'success').length} successful, ${results.filter(r => r.status === 'error').length} failed.`);
+    
+    const successful = results.filter(r => r.status === 'success').length;
+    const failed = results.filter(r => r.status === 'error').length;
+    addLog(`Processing completed. ${successful} successful, ${failed} failed.`);
   };
 
   const exportToCSV = () => {
