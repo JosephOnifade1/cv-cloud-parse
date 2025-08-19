@@ -11,6 +11,10 @@ import { ProcessingStats } from './ProcessingStats';
 import { ExtractionSettings } from './ExtractionSettings';
 import { ProcessingLog } from './ProcessingLog';
 import { Upload, FileText, Download, Settings, Activity } from 'lucide-react';
+import * as pdfjsLib from 'pdfjs-dist';
+
+// Configure PDF.js worker
+pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
 
 interface ExtractedData {
   filename: string;
@@ -76,34 +80,28 @@ export const CVProcessor: React.FC = () => {
       const reader = new FileReader();
       reader.onload = async (e) => {
         try {
-          // In a real implementation, we would use PDF.js here
-          // For now, we'll simulate PDF text extraction
-          const text = `
-            John Doe
-            Software Engineer
-            john.doe@email.com
-            +1 (555) 123-4567
-            San Francisco, CA
+          const typedarray = new Uint8Array(e.target?.result as ArrayBuffer);
+          
+          // Load the PDF document
+          const pdf = await pdfjsLib.getDocument(typedarray).promise;
+          let fullText = '';
+          
+          // Extract text from each page
+          for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+            const page = await pdf.getPage(pageNum);
+            const textContent = await page.getTextContent();
             
-            ABOUT
-            Experienced software engineer with 5+ years in web development.
+            // Combine text items from the page
+            const pageText = textContent.items
+              .map((item: any) => item.str)
+              .join(' ');
             
-            SKILLS
-            JavaScript, React, Node.js, Python, AWS, Docker
-            
-            EDUCATION
-            BS Computer Science - Stanford University (2018)
-            
-            EXPERIENCE
-            Senior Software Engineer at Tech Corp (2020-Present)
-            Software Engineer at StartupXYZ (2018-2020)
-            
-            LANGUAGES
-            English (Native), Spanish (Conversational)
-          `;
-          resolve(text);
+            fullText += pageText + '\n';
+          }
+          
+          resolve(fullText.trim());
         } catch (error) {
-          reject(error);
+          reject(new Error(`Failed to extract text from PDF: ${error instanceof Error ? error.message : 'Unknown error'}`));
         }
       };
       reader.onerror = () => reject(new Error('Failed to read file'));
@@ -118,93 +116,193 @@ export const CVProcessor: React.FC = () => {
     };
 
     try {
-      // Extract name
+      // Extract name - improved patterns for real CVs
       if (extractionSettings.extractName) {
-        const nameMatch = text.match(/^([A-Z][a-z]+\s+[A-Z][a-z]+)/m);
-        if (nameMatch) {
-          const nameParts = nameMatch[1].split(' ');
-          data.firstName = nameParts[0];
-          data.lastName = nameParts.slice(1).join(' ');
+        const namePatterns = [
+          /^([A-Z][a-z]+(?:\s+[A-Z][a-z]*)*\s+[A-Z][a-z]+)/m, // First line name
+          /Name:?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]*)*\s+[A-Z][a-z]+)/i, // Name: label
+          /([A-Z][A-Z\s]+)(?=\s*[\n\r])/m, // All caps name
+        ];
+        
+        for (const pattern of namePatterns) {
+          const nameMatch = text.match(pattern);
+          if (nameMatch) {
+            const fullName = nameMatch[1].replace(/\s+/g, ' ').trim();
+            const nameParts = fullName.split(' ');
+            data.firstName = nameParts[0];
+            data.lastName = nameParts.slice(1).join(' ');
+            break;
+          }
         }
       }
 
-      // Extract email
+      // Extract email - improved pattern
       if (extractionSettings.extractEmail) {
-        const emailMatch = text.match(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/);
+        const emailMatch = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
         if (emailMatch) {
           data.email = emailMatch[0];
         }
       }
 
-      // Extract phone
+      // Extract phone - improved patterns for various formats
       if (extractionSettings.extractPhone) {
-        const phoneMatch = text.match(/\+?1?[-.\s]?\(?([0-9]{3})\)?[-.\s]?([0-9]{3})[-.\s]?([0-9]{4})/);
-        if (phoneMatch) {
-          data.phone = phoneMatch[0];
+        const phonePatterns = [
+          /(?:\+?1[-.\s]?)?\(?([0-9]{3})\)?[-.\s]?([0-9]{3})[-.\s]?([0-9]{4})/,
+          /(?:\+[0-9]{1,3}[-.\s]?)?(?:\([0-9]{1,4}\)[-.\s]?)?[0-9]{1,4}[-.\s]?[0-9]{1,4}[-.\s]?[0-9]{1,9}/,
+        ];
+        
+        for (const pattern of phonePatterns) {
+          const phoneMatch = text.match(pattern);
+          if (phoneMatch) {
+            data.phone = phoneMatch[0];
+            break;
+          }
         }
       }
 
-      // Extract location
+      // Extract location - improved patterns for various formats
       if (extractionSettings.extractLocation) {
-        const locationMatch = text.match(/([A-Z][a-z]+,?\s+[A-Z]{2}|[A-Z][a-z]+,?\s+[A-Z][a-z]+)/);
-        if (locationMatch) {
-          data.location = locationMatch[0];
+        const locationPatterns = [
+          /([A-Z][a-z]+,?\s+[A-Z]{2,3}(?:\s+[0-9]{5})?)/g, // City, State ZIP
+          /([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,?\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/g, // City, Country
+          /Location:?\s*([A-Z][a-z]+(?:[\s,]+[A-Z][a-z]+)*)/i, // Location: label
+        ];
+        
+        for (const pattern of locationPatterns) {
+          const locationMatch = text.match(pattern);
+          if (locationMatch) {
+            data.location = locationMatch[1] || locationMatch[0];
+            break;
+          }
         }
       }
 
-      // Extract current role
+      // Extract current role - expanded role patterns
       if (extractionSettings.extractRole) {
-        const roleMatch = text.match(/(Software Engineer|Developer|Manager|Analyst|Designer|Consultant)/i);
-        if (roleMatch) {
-          data.currentRole = roleMatch[0];
+        const rolePatterns = [
+          /(Senior|Lead|Principal|Staff)?\s*(Software|Web|Mobile|Frontend|Backend|Full[- ]?Stack|DevOps|Data|Machine Learning|AI)?\s*(Engineer|Developer|Programmer|Architect|Scientist)/i,
+          /(Project|Product|Engineering|Technical|Program)?\s*Manager/i,
+          /(Business|Data|Systems|Financial|Research)?\s*Analyst/i,
+          /(UX|UI|Graphic|Web|Product)?\s*Designer/i,
+          /(IT|Technical|Management|Strategy|Marketing|Sales)?\s*Consultant/i,
+          /(Chief|Head)\s+of\s+[A-Z][a-z]+/i,
+          /Director\s+of\s+[A-Z][a-z]+/i,
+        ];
+        
+        for (const pattern of rolePatterns) {
+          const roleMatch = text.match(pattern);
+          if (roleMatch) {
+            data.currentRole = roleMatch[0].trim();
+            break;
+          }
         }
       }
 
-      // Extract skills
+      // Extract skills - improved pattern matching
       if (extractionSettings.extractSkills) {
-        const skillsSection = text.match(/SKILLS\s*\n?(.*?)(?=\n\s*[A-Z]+|$)/s);
-        if (skillsSection) {
-          const skills = skillsSection[1]
-            .split(/[,\n]/)
-            .map(skill => skill.trim())
-            .filter(skill => skill.length > 0);
-          data.skills = skills;
+        const skillsPatterns = [
+          /(?:SKILLS|TECHNICAL\s+SKILLS|CORE\s+COMPETENCIES|TECHNOLOGIES|PROGRAMMING\s+LANGUAGES)[:\s]*\n?(.*?)(?=\n\s*[A-Z\s]{2,}[:\n]|$)/is,
+          /Skills[:\s]+(.*?)(?=\n\s*[A-Z][a-z]*[:\s]|$)/is,
+        ];
+        
+        for (const pattern of skillsPatterns) {
+          const skillsSection = text.match(pattern);
+          if (skillsSection) {
+            const skills = skillsSection[1]
+              .split(/[,\n•·]/)
+              .map(skill => skill.replace(/[-•·]/g, '').trim())
+              .filter(skill => skill.length > 1 && !skill.match(/^\d+$/))
+              .slice(0, 20); // Limit to reasonable number
+            if (skills.length > 0) {
+              data.skills = skills;
+              break;
+            }
+          }
         }
       }
 
-      // Extract education
+      // Extract education - improved patterns
       if (extractionSettings.extractEducation) {
-        const educationMatch = text.match(/EDUCATION\s*\n?(.*?)(?=\n\s*[A-Z]+|$)/s);
-        if (educationMatch) {
-          data.education = educationMatch[1].trim();
+        const educationPatterns = [
+          /(?:EDUCATION|ACADEMIC\s+BACKGROUND|QUALIFICATIONS)[:\s]*\n?(.*?)(?=\n\s*[A-Z\s]{2,}[:\n]|$)/is,
+          /(Bachelor|Master|PhD|Doctorate|Associate|Certificate)[^.\n]*(?:University|College|Institute|School)[^.\n]*/gi,
+          /(B\.?S\.?|M\.?S\.?|Ph\.?D\.?|MBA)[^.\n]*(?:in\s+)?[A-Z][a-z\s]*/gi,
+        ];
+        
+        for (const pattern of educationPatterns) {
+          const educationMatch = text.match(pattern);
+          if (educationMatch) {
+            // Handle global flag patterns that return arrays
+            if (pattern.global && Array.isArray(educationMatch)) {
+              data.education = educationMatch.join('; ');
+            } else {
+              // Handle single match patterns
+              const match = educationMatch as RegExpMatchArray;
+              data.education = match[1] ? match[1].trim() : match[0].trim();
+            }
+            if (data.education && data.education.length > 5) break;
+          }
         }
       }
 
-      // Extract experience
+      // Extract experience - improved patterns
       if (extractionSettings.extractExperience) {
-        const experienceMatch = text.match(/EXPERIENCE\s*\n?(.*?)(?=\n\s*[A-Z]+|$)/s);
-        if (experienceMatch) {
-          data.experience = experienceMatch[1].trim();
+        const experiencePatterns = [
+          /(?:WORK\s+EXPERIENCE|PROFESSIONAL\s+EXPERIENCE|EXPERIENCE|EMPLOYMENT\s+HISTORY)[:\s]*\n?(.*?)(?=\n\s*[A-Z\s]{2,}[:\n]|$)/is,
+          /Experience[:\s]+(.*?)(?=\n\s*[A-Z][a-z]*[:\s]|$)/is,
+        ];
+        
+        for (const pattern of experiencePatterns) {
+          const experienceMatch = text.match(pattern);
+          if (experienceMatch) {
+            const experience = experienceMatch[1].trim().substring(0, 500); // Limit length
+            if (experience && experience.length > 10) {
+              data.experience = experience;
+              break;
+            }
+          }
         }
       }
 
-      // Extract about
+      // Extract about/summary - improved patterns
       if (extractionSettings.extractAbout) {
-        const aboutMatch = text.match(/ABOUT\s*\n?(.*?)(?=\n\s*[A-Z]+|$)/s);
-        if (aboutMatch) {
-          data.about = aboutMatch[1].trim();
+        const aboutPatterns = [
+          /(?:ABOUT|SUMMARY|PROFILE|OBJECTIVE|PROFESSIONAL\s+SUMMARY|CAREER\s+SUMMARY)[:\s]*\n?(.*?)(?=\n\s*[A-Z\s]{2,}[:\n]|$)/is,
+          /Summary[:\s]+(.*?)(?=\n\s*[A-Z][a-z]*[:\s]|$)/is,
+        ];
+        
+        for (const pattern of aboutPatterns) {
+          const aboutMatch = text.match(pattern);
+          if (aboutMatch) {
+            const about = aboutMatch[1].trim().substring(0, 300); // Limit length
+            if (about && about.length > 10) {
+              data.about = about;
+              break;
+            }
+          }
         }
       }
 
-      // Extract languages
+      // Extract languages - improved patterns
       if (extractionSettings.extractLanguages) {
-        const languagesMatch = text.match(/LANGUAGES\s*\n?(.*?)(?=\n\s*[A-Z]+|$)/s);
-        if (languagesMatch) {
-          const languages = languagesMatch[1]
-            .split(/[,\n]/)
-            .map(lang => lang.trim())
-            .filter(lang => lang.length > 0);
-          data.languages = languages;
+        const languagePatterns = [
+          /(?:LANGUAGES|LANGUAGE\s+SKILLS)[:\s]*\n?(.*?)(?=\n\s*[A-Z\s]{2,}[:\n]|$)/is,
+          /Languages[:\s]+(.*?)(?=\n\s*[A-Z][a-z]*[:\s]|$)/is,
+        ];
+        
+        for (const pattern of languagePatterns) {
+          const languagesMatch = text.match(pattern);
+          if (languagesMatch) {
+            const languages = languagesMatch[1]
+              .split(/[,\n•·]/)
+              .map(lang => lang.replace(/[-•·]/g, '').replace(/\([^)]*\)/g, '').trim())
+              .filter(lang => lang.length > 1)
+              .slice(0, 10); // Limit to reasonable number
+            if (languages.length > 0) {
+              data.languages = languages;
+              break;
+            }
+          }
         }
       }
 
