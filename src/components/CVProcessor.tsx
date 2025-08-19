@@ -13,20 +13,45 @@ import { ProcessingLog } from './ProcessingLog';
 import { Upload, FileText, Download, Settings, Activity } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 
-// Configure PDF.js worker with multiple fallbacks
-if (typeof window !== 'undefined') {
-  try {
-    // Try using unpkg CDN first
-    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.js`;
-  } catch (error) {
+// Configure PDF.js worker with multiple fallbacks and worker-less mode
+const setupPDFWorker = async () => {
+  if (typeof window === 'undefined') return;
+
+  const workerUrls = [
+    `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.js`,
+    `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.js`,
+    `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.js`,
+    '/pdf.worker.js'
+  ];
+
+  let workerConfigured = false;
+
+  // Try each worker URL
+  for (const url of workerUrls) {
     try {
-      // Fallback to local worker stub
-      pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.js';
-    } catch (fallbackError) {
-      console.warn('PDF.js worker setup failed completely', error, fallbackError);
+      const response = await fetch(url, { method: 'HEAD' });
+      if (response.ok) {
+        pdfjsLib.GlobalWorkerOptions.workerSrc = url;
+        workerConfigured = true;
+        console.log(`PDF.js worker configured with: ${url}`);
+        break;
+      }
+    } catch (error) {
+      console.warn(`Failed to load worker from ${url}:`, error);
     }
   }
-}
+
+  // If no worker URL works, configure for worker-less mode
+  if (!workerConfigured) {
+    console.warn('All worker URLs failed, configuring worker-less mode');
+    pdfjsLib.GlobalWorkerOptions.workerSrc = null;
+    // @ts-ignore - disableWorker is not in types but exists
+    pdfjsLib.disableWorker = true;
+  }
+};
+
+// Initialize worker setup
+setupPDFWorker();
 
 interface ExtractedData {
   filename: string;
