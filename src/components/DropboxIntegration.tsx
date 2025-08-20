@@ -24,7 +24,7 @@ import { useToast } from '@/hooks/use-toast';
 
 // Dropbox configuration
 const DROPBOX_CONFIG = {
-  clientId: process.env.VITE_DROPBOX_APP_KEY || 'your_dropbox_app_key',
+  clientId: import.meta.env.VITE_DROPBOX_APP_KEY || 'your_dropbox_app_key',
   redirectUri: window.location.origin + '/dropbox-auth',
   responseType: 'code',
   scope: 'files.content.read files.metadata.read account_info.read'
