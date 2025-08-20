@@ -13,7 +13,7 @@ import { ProcessingLog } from './ProcessingLog';
 import { Upload, FileText, Download, Settings, Activity } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 
-// Configure PDF.js worker with synchronous fallback handling
+// Configure PDF.js worker with better error handling
 let isWorkerSetup = false;
 let workerSetupPromise: Promise<void> | null = null;
 
@@ -22,48 +22,58 @@ const setupPDFWorker = () => {
   if (workerSetupPromise) return workerSetupPromise;
 
   workerSetupPromise = (async () => {
-    const workerUrls = [
-      `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.js`,
-      `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.js`,
-      `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.js`,
-      '/pdf.worker.js'
-    ];
+    try {
+      // Updated CDN URLs for latest PDF.js versions
+      const workerUrls = [
+        `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`,
+        `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.js`,
+        `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.js`,
+        '/pdf.worker.js'
+      ];
 
-    let workerConfigured = false;
+      let workerConfigured = false;
 
-    // Try each worker URL with timeout
-    for (const url of workerUrls) {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3000); // 3 second timeout
-        
-        const response = await fetch(url, { 
-          method: 'HEAD',
-          signal: controller.signal
-        });
-        
-        clearTimeout(timeoutId);
-        
-        if (response.ok) {
-          pdfjsLib.GlobalWorkerOptions.workerSrc = url;
-          workerConfigured = true;
-          console.log(`PDF.js worker configured with: ${url}`);
-          break;
+      // Try each worker URL with better error handling
+      for (const url of workerUrls) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 5000);
+          
+          const response = await fetch(url, { 
+            method: 'HEAD',
+            signal: controller.signal,
+            cache: 'force-cache'
+          });
+          
+          clearTimeout(timeoutId);
+          
+          if (response.ok) {
+            pdfjsLib.GlobalWorkerOptions.workerSrc = url;
+            workerConfigured = true;
+            console.log(`✓ PDF.js worker configured with: ${url}`);
+            break;
+          }
+        } catch (error) {
+          console.warn(`Failed to load worker from ${url}:`, error);
+          continue;
         }
-      } catch (error) {
-        console.warn(`Failed to load worker from ${url}:`, error);
       }
-    }
 
-    // If no worker URL works, configure for worker-less mode
-    if (!workerConfigured) {
-      console.warn('All worker URLs failed, configuring worker-less mode');
+      // Better fallback handling
+      if (!workerConfigured) {
+        console.warn('⚠ All worker URLs failed, using legacy mode');
+        pdfjsLib.GlobalWorkerOptions.workerSrc = null;
+        (pdfjsLib as any).disableWorker = true;
+        (window as any).pdfjsLib = pdfjsLib;
+      }
+
+      isWorkerSetup = true;
+    } catch (error) {
+      console.error('Worker setup failed:', error);
       pdfjsLib.GlobalWorkerOptions.workerSrc = null;
-      // @ts-ignore - disableWorker is not in types but exists
-      pdfjsLib.disableWorker = true;
+      (pdfjsLib as any).disableWorker = true;
+      isWorkerSetup = true;
     }
-
-    isWorkerSetup = true;
   })();
 
   return workerSetupPromise;
@@ -132,21 +142,24 @@ export const CVProcessor: React.FC = () => {
   }, [addLog]);
 
   const extractTextFromPDF = async (file: File): Promise<string> => {
-    // Ensure worker is set up before processing
     await setupPDFWorker();
 
     return new Promise((resolve, reject) => {
-      // Set up timeout for the entire operation
-      const timeoutId = setTimeout(() => {
+      const globalTimeoutId = setTimeout(() => {
         reject(new Error('PDF processing timeout - file may be too large or corrupted'));
-      }, 30000); // 30 second timeout
+      }, 60000);
 
       const reader = new FileReader();
+      
       reader.onload = async (e) => {
         try {
-          const typedarray = new Uint8Array(e.target?.result as ArrayBuffer);
+          const arrayBuffer = e.target?.result as ArrayBuffer;
+          if (!arrayBuffer) {
+            throw new Error('Failed to read file as ArrayBuffer');
+          }
+
+          const typedarray = new Uint8Array(arrayBuffer);
           
-          let pdf;
           const loadingTask = pdfjsLib.getDocument({
             data: typedarray,
             useWorkerFetch: false,
@@ -155,82 +168,98 @@ export const CVProcessor: React.FC = () => {
             disableStream: true,
             disableRange: true,
             stopAtErrors: false,
-            maxImageSize: 1024 * 1024, // 1MB max image size
+            maxImageSize: 1024 * 1024,
             cMapPacked: true,
-            verbosity: 0 // Reduce console spam
+            verbosity: 0,
+            password: '',
+            cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/cmaps/`,
+            standardFontDataUrl: `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/standard_fonts/`
           });
 
-          // Add timeout to PDF loading
-          const loadTimeout = setTimeout(() => {
-            loadingTask.destroy();
-            reject(new Error('PDF loading timeout'));
-          }, 15000);
-
+          let pdf;
           try {
-            pdf = await loadingTask.promise;
-            clearTimeout(loadTimeout);
+            pdf = await Promise.race([
+              loadingTask.promise,
+              new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('PDF loading timeout')), 30000)
+              )
+            ]) as any;
           } catch (loadError) {
-            clearTimeout(loadTimeout);
-            console.error('PDF loading failed:', loadError);
+            loadingTask.destroy();
             throw new Error(`Failed to load PDF: ${loadError instanceof Error ? loadError.message : 'Unknown error'}`);
           }
 
           let fullText = '';
-          const maxPages = Math.min(pdf.numPages, 20); // Limit to 20 pages for performance
+          const maxPages = Math.min(pdf.numPages, 20);
+          console.log(`Processing ${maxPages} pages from ${file.name}`);
           
-          // Extract text from each page with individual timeouts
           for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
             try {
-              const pageTimeout = setTimeout(() => {
-                throw new Error(`Page ${pageNum} processing timeout`);
-              }, 5000);
+              const page = await Promise.race([
+                pdf.getPage(pageNum),
+                new Promise((_, reject) => 
+                  setTimeout(() => reject(new Error(`Page ${pageNum} timeout`)), 10000)
+                )
+              ]) as any;
 
-              const page = await pdf.getPage(pageNum);
-              const textContent = await page.getTextContent();
-              clearTimeout(pageTimeout);
+              const textContent = await Promise.race([
+                page.getTextContent({
+                  normalizeWhitespace: true,
+                  disableCombineTextItems: false
+                }),
+                new Promise((_, reject) => 
+                  setTimeout(() => reject(new Error(`Page ${pageNum} text extraction timeout`)), 10000)
+                )
+              ]) as any;
               
-              // Combine text items from the page with proper spacing
               const pageText = textContent.items
                 .map((item: any) => {
                   if (item.str && typeof item.str === 'string') {
-                    return item.str;
+                    return item.str.trim();
                   }
                   return '';
                 })
-                .filter(str => str.trim().length > 0)
-                .join(' ');
+                .filter((str: string) => str.length > 0)
+                .join(' ')
+                .replace(/\s+/g, ' ');
               
-              fullText += pageText + '\n';
+              if (pageText) {
+                fullText += pageText + '\n';
+              }
 
-              // Clean up page resources
               page.cleanup();
+              
             } catch (pageError) {
               console.warn(`Failed to extract text from page ${pageNum}:`, pageError);
-              // Continue with other pages
+              continue;
             }
           }
 
-          // Clean up PDF resources
           pdf.cleanup();
+          loadingTask.destroy();
           
-          clearTimeout(timeoutId);
+          clearTimeout(globalTimeoutId);
           
-          if (fullText.trim().length === 0) {
-            reject(new Error('No text content found in PDF. The file might be an image-based PDF or corrupted.'));
-          } else {
-            resolve(fullText.trim());
+          const cleanText = fullText.trim().replace(/\s+/g, ' ');
+          if (cleanText.length === 0) {
+            reject(new Error('No readable text content found in PDF. This might be an image-based PDF or the file may be corrupted.'));
+          } else if (cleanText.length < 50) {
+            console.warn(`Very little text extracted from ${file.name}: ${cleanText.length} characters`);
           }
           
+          resolve(cleanText);
+          
         } catch (error) {
-          clearTimeout(timeoutId);
+          clearTimeout(globalTimeoutId);
           console.error('PDF extraction error:', error);
           reject(new Error(`Failed to extract text from PDF: ${error instanceof Error ? error.message : 'Unknown error'}`));
         }
       };
       
-      reader.onerror = () => {
-        clearTimeout(timeoutId);
-        reject(new Error('Failed to read file'));
+      reader.onerror = (error) => {
+        clearTimeout(globalTimeoutId);
+        console.error('FileReader error:', error);
+        reject(new Error('Failed to read file - file may be corrupted'));
       };
       
       reader.readAsArrayBuffer(file);
@@ -445,40 +474,49 @@ export const CVProcessor: React.FC = () => {
   const processFiles = async () => {
     if (files.length === 0) return;
 
-    // Pre-flight check: ensure worker is ready
     try {
       await setupPDFWorker();
-      addLog('PDF.js worker initialized successfully');
+      addLog('✓ PDF.js worker initialized successfully');
     } catch (error) {
-      addLog('Warning: PDF.js worker setup failed, continuing with worker-less mode');
+      addLog('⚠ PDF.js worker setup had issues, continuing with fallback mode');
     }
 
     setIsProcessing(true);
     setExtractedData([]);
     setStats({ total: files.length, processed: 0, successful: 0, failed: 0 });
-    addLog(`Starting processing of ${files.length} files`);
+    addLog(`🚀 Starting processing of ${files.length} files`);
 
     const results: ExtractedData[] = [];
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       setStats(prev => ({ ...prev, currentFile: file.name }));
-      addLog(`Processing file ${i + 1}/${files.length}: ${file.name}`);
+      addLog(`📄 Processing file ${i + 1}/${files.length}: ${file.name}`);
 
       try {
-        // Add per-file timeout wrapper
         const fileProcessingPromise = (async () => {
+          if (file.size === 0) {
+            throw new Error('File is empty');
+          }
+          if (file.size > 50 * 1024 * 1024) {
+            throw new Error('File too large (>50MB)');
+          }
+          
           const text = await extractTextFromPDF(file);
           
           if (!text || text.trim().length === 0) {
             throw new Error('No text content extracted from PDF');
           }
           
+          if (text.length < 10) {
+            throw new Error('Extracted text is too short - likely not a valid CV');
+          }
+          
           const extractedData = extractDataFromText(text, file.name);
           
-          // Validate that at least some data was extracted
           const hasData = extractedData.firstName || extractedData.email || 
-                         extractedData.phone || extractedData.skills?.length;
+                         extractedData.phone || extractedData.skills?.length ||
+                         extractedData.currentRole || extractedData.location;
           
           if (!hasData) {
             extractedData.status = 'error';
@@ -488,9 +526,8 @@ export const CVProcessor: React.FC = () => {
           return extractedData;
         })();
 
-        // Add 45-second timeout per file
         const timeoutPromise = new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error('File processing timeout (45s)')), 45000);
+          setTimeout(() => reject(new Error('File processing timeout (90s) - file may be very large or complex')), 90000);
         });
 
         const extractedData = await Promise.race([fileProcessingPromise, timeoutPromise]);
@@ -504,15 +541,16 @@ export const CVProcessor: React.FC = () => {
         }));
 
         if (extractedData.status === 'success') {
-          addLog(`✓ Successfully processed: ${file.name}`);
+          addLog(`✅ Successfully processed: ${file.name}`);
         } else {
-          addLog(`⚠ Processed with warnings: ${file.name} - ${extractedData.errorMessage}`);
+          addLog(`⚠️ Processed with issues: ${file.name} - ${extractedData.errorMessage}`);
         }
+        
       } catch (error) {
         const errorData: ExtractedData = {
           filename: file.name,
           status: 'error',
-          errorMessage: error instanceof Error ? error.message : 'Unknown error'
+          errorMessage: error instanceof Error ? error.message : 'Unknown processing error'
         };
         results.push(errorData);
 
@@ -522,15 +560,13 @@ export const CVProcessor: React.FC = () => {
           failed: prev.failed + 1
         }));
 
-        addLog(`✗ Failed to process: ${file.name} - ${errorData.errorMessage}`);
+        addLog(`❌ Failed to process: ${file.name} - ${errorData.errorMessage}`);
       }
 
-      // Update results after each file for real-time feedback
       setExtractedData([...results]);
 
-      // Small delay between files to prevent overwhelming the browser
       if (i < files.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 200));
       }
     }
 
@@ -539,7 +575,7 @@ export const CVProcessor: React.FC = () => {
     
     const successful = results.filter(r => r.status === 'success').length;
     const failed = results.filter(r => r.status === 'error').length;
-    addLog(`Processing completed. ${successful} successful, ${failed} failed.`);
+    addLog(`🏁 Processing completed! ${successful} successful, ${failed} failed out of ${files.length} total files.`);
   };
 
   const exportToCSV = () => {
