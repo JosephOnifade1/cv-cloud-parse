@@ -23,7 +23,7 @@ const setupPDFWorker = () => {
 
   workerSetupPromise = (async () => {
     try {
-      // Updated CDN URLs for latest PDF.js versions
+      // Updated CDN URLs for stable PDF.js version
       const workerUrls = [
         `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`,
         `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.js`,
@@ -59,19 +59,19 @@ const setupPDFWorker = () => {
         }
       }
 
-      // Better fallback handling
+      // Better fallback handling - just disable worker without modifying imports
       if (!workerConfigured) {
         console.warn('⚠ All worker URLs failed, using legacy mode');
         pdfjsLib.GlobalWorkerOptions.workerSrc = null;
-        (pdfjsLib as any).disableWorker = true;
-        (window as any).pdfjsLib = pdfjsLib;
+        // Set a flag on window object instead of modifying imports
+        (window as any).__PDFJS_DISABLE_WORKER__ = true;
       }
 
       isWorkerSetup = true;
     } catch (error) {
       console.error('Worker setup failed:', error);
       pdfjsLib.GlobalWorkerOptions.workerSrc = null;
-      (pdfjsLib as any).disableWorker = true;
+      (window as any).__PDFJS_DISABLE_WORKER__ = true;
       isWorkerSetup = true;
     }
   })();
