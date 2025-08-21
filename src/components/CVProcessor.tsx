@@ -14,21 +14,15 @@ import { Upload, FileText, Download, Settings, Activity } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as XLSX from 'xlsx';
 
-// Simplified PDF.js Worker Setup with Static Path
+// PDF.js Worker Setup - Use CDN directly to avoid Vite bundling issues
 const EXPECTED_VERSION = "4.0.379";
 
 console.log(`🔍 PDF.js API version: ${pdfjsLib.version}`);
 
-// Use direct static path to avoid Vite bundling issues
-const workerSources = [
-  '/pdf.worker.js', // Local static file (highest priority)
-  `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.js`, // CDN fallback
-  'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.js' // Alternative CDN
-];
-
-// Set the first available worker source
-pdfjsLib.GlobalWorkerOptions.workerSrc = workerSources[0];
-console.log(`✅ PDF.js worker configured: ${workerSources[0]}`);
+// Use direct CDN URL - this avoids all Vite bundling/module resolution issues
+const workerUrl = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.js`;
+pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+console.log(`✅ PDF.js worker configured with CDN: ${workerUrl}`);
 
 interface ExtractedData {
   filename: string;
