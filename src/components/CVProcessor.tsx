@@ -12,8 +12,6 @@ import { ExtractionSettings } from './ExtractionSettings';
 import { ProcessingLog } from './ProcessingLog';
 import { Upload, FileText, Download, Settings, Activity } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
-import * as pdfjsLib from 'pdfjs-dist';
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.js`;
 import * as XLSX from 'xlsx';
 
 // SAFE PDF.js Worker Setup - Use worker-less mode for stability
