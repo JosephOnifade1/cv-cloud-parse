@@ -12,6 +12,7 @@ import { ExtractionSettings } from './ExtractionSettings';
 import { ProcessingLog } from './ProcessingLog';
 import { Upload, FileText, Download, Settings, Activity } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
+import * as XLSX from 'xlsx';
 
 // PDF.js worker configuration with version validation
 const EXPECTED_VERSION = "4.0.379";
@@ -713,6 +714,72 @@ export const CVProcessor: React.FC = () => {
     addLog(`Exported ${extractedData.length} records to CSV`);
   };
 
+  const exportToExcel = () => {
+    if (extractedData.length === 0) return;
+
+    // Create workbook and worksheet
+    const wb = XLSX.utils.book_new();
+    
+    // Main data sheet
+    const mainData = extractedData.map(data => ({
+      'Filename': data.filename,
+      'First Name': data.firstName || '',
+      'Last Name': data.lastName || '',
+      'Email': data.email || '',
+      'Phone': data.phone || '',
+      'Location': data.location || '',
+      'Current Role': data.currentRole || '',
+      'Skills': data.skills?.join('; ') || '',
+      'Education': data.education || '',
+      'Experience': data.experience || '',
+      'About': data.about || '',
+      'Languages': data.languages?.join('; ') || '',
+      'Status': data.status
+    }));
+    
+    const ws = XLSX.utils.json_to_sheet(mainData);
+    
+    // Set column widths for better readability
+    ws['!cols'] = [
+      { width: 25 }, // Filename
+      { width: 15 }, // First Name
+      { width: 15 }, // Last Name
+      { width: 25 }, // Email
+      { width: 15 }, // Phone
+      { width: 20 }, // Location
+      { width: 25 }, // Current Role
+      { width: 40 }, // Skills
+      { width: 30 }, // Education
+      { width: 40 }, // Experience
+      { width: 30 }, // About
+      { width: 20 }, // Languages
+      { width: 12 }  // Status
+    ];
+    
+    XLSX.utils.book_append_sheet(wb, ws, 'CV Data');
+    
+    // Summary sheet
+    const summaryData = [
+      { 'Metric': 'Total Files Processed', 'Value': stats.total },
+      { 'Metric': 'Successfully Processed', 'Value': stats.successful },
+      { 'Metric': 'Failed Processing', 'Value': stats.failed },
+      { 'Metric': 'Success Rate', 'Value': `${stats.total > 0 ? ((stats.successful / stats.total) * 100).toFixed(1) : 0}%` },
+      { 'Metric': 'Export Date', 'Value': new Date().toLocaleString() }
+    ];
+    
+    const summaryWs = XLSX.utils.json_to_sheet(summaryData);
+    summaryWs['!cols'] = [{ width: 25 }, { width: 20 }];
+    XLSX.utils.book_append_sheet(wb, summaryWs, 'Summary');
+    
+    // Generate filename with timestamp
+    const filename = `cv_extraction_results_${new Date().toISOString().split('T')[0]}.xlsx`;
+    
+    // Download file
+    XLSX.writeFile(wb, filename);
+    
+    addLog(`Exported ${extractedData.length} records to Excel`);
+  };
+
   const progress = stats.total > 0 ? (stats.processed / stats.total) * 100 : 0;
 
   return (
@@ -795,14 +862,24 @@ export const CVProcessor: React.FC = () => {
                     </Button>
                     
                     {extractedData.length > 0 && (
-                      <Button 
-                        onClick={exportToCSV}
-                        variant="outline"
-                        size="lg"
-                      >
-                        <Download className="h-4 w-4 mr-2" />
-                        Export CSV
-                      </Button>
+                      <div className="flex gap-2">
+                        <Button 
+                          onClick={exportToExcel}
+                          variant="outline"
+                          size="lg"
+                        >
+                          <Download className="h-4 w-4 mr-2" />
+                          Export Excel
+                        </Button>
+                        <Button 
+                          onClick={exportToCSV}
+                          variant="outline"
+                          size="lg"
+                        >
+                          <Download className="h-4 w-4 mr-2" />
+                          Export CSV
+                        </Button>
+                      </div>
                     )}
                   </div>
                 </CardContent>
