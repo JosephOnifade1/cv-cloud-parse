@@ -14,15 +14,12 @@ import { Upload, FileText, Download, Settings, Activity } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as XLSX from 'xlsx';
 
-// PDF.js Worker Setup - Worker-less mode for maximum compatibility
+// IMMEDIATE PDF.js Worker Setup - Configure immediately when component loads
+pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.js';
+
 const EXPECTED_VERSION = "4.0.379";
-
 console.log(`🔍 PDF.js API version: ${pdfjsLib.version}`);
-
-// Disable worker for maximum compatibility and to avoid all worker loading issues
-pdfjsLib.GlobalWorkerOptions.workerSrc = '';
-pdfjsLib.GlobalWorkerOptions.workerPort = null;
-console.log(`✅ PDF.js configured in worker-less mode for maximum compatibility`);
+console.log(`✅ PDF.js worker configured: /pdf.worker.min.js`);
 
 interface ExtractedData {
   filename: string;
@@ -115,18 +112,15 @@ export const CVProcessor: React.FC = () => {
             useWorkerFetch: false,
             isEvalSupported: false,
             disableAutoFetch: true,
-            disableStream: fileSizeMB > 10, // Disable streaming for large files
+            disableStream: fileSizeMB > 10,
             disableRange: true,
             stopAtErrors: false,
-            maxImageSize: 2048 * 2048, // Increased for better quality
+            maxImageSize: 2048 * 2048,
             cMapPacked: true,
-            verbosity: 0, // Reduce console noise
-            password: '', // Handle password-protected PDFs gracefully
-            // Remove external CDN dependencies - use local resources only
-            cMapUrl: null,
-            standardFontDataUrl: null,
+            verbosity: 0,
+            password: '',
             fontExtraProperties: true,
-            enableXfa: false // Disable XFA forms for performance
+            enableXfa: false
           });
 
           let pdf;
