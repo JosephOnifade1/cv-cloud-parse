@@ -26,16 +26,13 @@ const setupPDFWorker = () => {
   workerSetupPromise = (async () => {
     try {
       // Version validation
-      if (pdfjsLib.version !== EXPECTED_VERSION) {
-        console.warn(`⚠ PDF.js version mismatch: expected ${EXPECTED_VERSION}, got ${pdfjsLib.version}`);
-      }
-
-      // Version-specific worker URLs with exact matching
+      console.log(`🔍 PDF.js API version: ${pdfjsLib.version}`);
+      
+      // Always use CDN worker to ensure version matching
       const workerUrls = [
-        '/pdf.worker.js', // Local worker file (primary)
         `https://unpkg.com/pdfjs-dist@${EXPECTED_VERSION}/build/pdf.worker.min.js`,
-        `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${EXPECTED_VERSION}/pdf.worker.min.js`,
-        `https://cdn.jsdelivr.net/npm/pdfjs-dist@${EXPECTED_VERSION}/build/pdf.worker.min.js`
+        `https://cdn.jsdelivr.net/npm/pdfjs-dist@${EXPECTED_VERSION}/build/pdf.worker.min.js`,
+        `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${EXPECTED_VERSION}/pdf.worker.min.js`
       ];
 
       let workerConfigured = false;
