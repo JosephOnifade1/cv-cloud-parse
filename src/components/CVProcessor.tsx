@@ -14,8 +14,10 @@ import { Upload, FileText, Download, Settings, Activity } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as XLSX from 'xlsx';
 
-// IMMEDIATE PDF.js Worker Setup - Configure immediately when component loads
-pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.js';
+// Configure PDF.js to work without worker (fallback mode for reliability)
+pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+// @ts-ignore - Disable worker for maximum compatibility
+pdfjsLib.disableWorker = true;
 
 const EXPECTED_VERSION = "4.0.379";
 console.log(`🔍 PDF.js API version: ${pdfjsLib.version}`);
