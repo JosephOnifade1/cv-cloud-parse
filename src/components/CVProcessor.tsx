@@ -21,32 +21,37 @@ let workerSetupPromise: Promise<void> | null = null;
 
 const setupPDFWorker = () => {
   if (typeof window === 'undefined') return Promise.resolve();
+  if (isWorkerSetup) return Promise.resolve();
   if (workerSetupPromise) return workerSetupPromise;
 
   workerSetupPromise = (async () => {
     try {
-      // Version validation
       console.log(`🔍 PDF.js API version: ${pdfjsLib.version}`);
       
-      // Always use CDN worker to ensure version matching
+      // Immediately set a fallback worker source to prevent the error
+      const fallbackWorkerUrl = `https://unpkg.com/pdfjs-dist@${EXPECTED_VERSION}/build/pdf.worker.min.js`;
+      pdfjsLib.GlobalWorkerOptions.workerSrc = fallbackWorkerUrl;
+      
+      // Worker URLs to try in order
       const workerUrls = [
         `https://unpkg.com/pdfjs-dist@${EXPECTED_VERSION}/build/pdf.worker.min.js`,
         `https://cdn.jsdelivr.net/npm/pdfjs-dist@${EXPECTED_VERSION}/build/pdf.worker.min.js`,
-        `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${EXPECTED_VERSION}/pdf.worker.min.js`
+        `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${EXPECTED_VERSION}/pdf.worker.min.js`,
+        '/pdf.worker.js' // Local fallback
       ];
 
       let workerConfigured = false;
 
-      // Try each worker URL with enhanced error handling and version validation
+      // Try each worker URL
       for (const url of workerUrls) {
         try {
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 8000);
+          const timeoutId = setTimeout(() => controller.abort(), 5000);
           
           const response = await fetch(url, { 
             method: 'HEAD',
             signal: controller.signal,
-            cache: 'force-cache'
+            cache: 'no-cache'
           });
           
           clearTimeout(timeoutId);
@@ -63,21 +68,19 @@ const setupPDFWorker = () => {
         }
       }
 
-      // Enhanced fallback with worker-less mode
       if (!workerConfigured) {
-        console.warn('⚠ All worker URLs failed - enabling worker-less mode');
-        pdfjsLib.GlobalWorkerOptions.workerSrc = null;
-        (window as any).__PDFJS_DISABLE_WORKER__ = true;
-        console.log('🔄 PDF.js running in compatibility mode without worker');
+        console.warn('⚠ All worker URLs failed - using fallback');
+        // Keep the fallback URL that was already set
       }
 
       isWorkerSetup = true;
     } catch (error) {
       console.error('💥 Critical worker setup failure:', error);
-      pdfjsLib.GlobalWorkerOptions.workerSrc = null;
-      (window as any).__PDFJS_DISABLE_WORKER__ = true;
+      // Ensure worker source is still set to prevent the error
+      if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+        pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${EXPECTED_VERSION}/build/pdf.worker.min.js`;
+      }
       isWorkerSetup = true;
-      throw error; // Re-throw to be caught by calling code
     }
   })();
 
