@@ -14,12 +14,105 @@ import { Upload, FileText, Download, Settings, Activity } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as XLSX from 'xlsx';
 
-// SAFE PDF.js Worker Setup - Use worker-less mode for stability
-pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+// Enhanced PDF.js Worker Configuration with Progressive Fallback
+let workerInitialized = false;
+let workerFailed = false;
 
-const EXPECTED_VERSION = "4.0.379";
-console.log(`🔍 PDF.js API version: ${pdfjsLib.version}`);
-console.log(`✅ PDF.js worker-less mode configured for stability`);
+const initializePDFWorker = async (): Promise<boolean> => {
+  if (workerInitialized) return true;
+  if (workerFailed) return false;
+
+  try {
+    // Try CDN worker first for best performance
+    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.js`;
+    
+    // Test worker with a simple operation
+    const testData = new Uint8Array([0x25, 0x50, 0x44, 0x46]); // %PDF header
+    const testTask = pdfjsLib.getDocument({ data: testData, verbosity: 0 });
+    
+    await Promise.race([
+      testTask.promise.catch(() => {}), // Ignore expected failure
+      new Promise(resolve => setTimeout(resolve, 3000)) // 3s timeout
+    ]);
+    
+    testTask.destroy();
+    workerInitialized = true;
+    console.log(`✅ PDF.js v${pdfjsLib.version} worker initialized successfully`);
+    return true;
+  } catch (error) {
+    console.warn('⚠️ CDN worker failed, falling back to worker-less mode:', error);
+    
+    // Fallback to worker-less mode
+    pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+    workerFailed = true;
+    console.log(`✅ PDF.js v${pdfjsLib.version} worker-less mode enabled`);
+    return false;
+  }
+};
+
+// Error Classification System
+enum ErrorType {
+  CONFIGURATION = 'configuration',
+  FILE_FORMAT = 'file_format', 
+  PROCESSING = 'processing',
+  NETWORK = 'network',
+  TIMEOUT = 'timeout',
+  MEMORY = 'memory'
+}
+
+interface ProcessingError {
+  type: ErrorType;
+  message: string;
+  recoverable: boolean;
+  userMessage: string;
+}
+
+const classifyError = (error: Error, filename: string): ProcessingError => {
+  const message = error.message.toLowerCase();
+  
+  if (message.includes('timeout') || message.includes('time')) {
+    return {
+      type: ErrorType.TIMEOUT,
+      message: error.message,
+      recoverable: true,
+      userMessage: `${filename} took too long to process. Try with a smaller file or check if it's image-based.`
+    };
+  }
+  
+  if (message.includes('memory') || message.includes('heap')) {
+    return {
+      type: ErrorType.MEMORY,
+      message: error.message,
+      recoverable: true,
+      userMessage: `${filename} is too large for processing. Try reducing file size or processing fewer files at once.`
+    };
+  }
+  
+  if (message.includes('worker') || message.includes('pdf.js')) {
+    return {
+      type: ErrorType.CONFIGURATION,
+      message: error.message,
+      recoverable: true,
+      userMessage: `PDF processing configuration issue. The system will retry automatically.`
+    };
+  }
+  
+  if (message.includes('format') || message.includes('corrupt') || message.includes('invalid')) {
+    return {
+      type: ErrorType.FILE_FORMAT,
+      message: error.message,
+      recoverable: false,
+      userMessage: `${filename} appears to be corrupted or in an unsupported format.`
+    };
+  }
+  
+  return {
+    type: ErrorType.PROCESSING,
+    message: error.message,
+    recoverable: true,
+    userMessage: `Error processing ${filename}. ${error.message}`
+  };
+};
 
 interface ExtractedData {
   filename: string;
@@ -80,14 +173,23 @@ export const CVProcessor: React.FC = () => {
     addLog(`Selected ${selectedFiles.length} files for processing`);
   }, [addLog]);
 
-  const extractTextFromPDF = async (file: File): Promise<string> => {
-    // Worker is now automatically configured on module load
+  const extractTextFromPDF = async (file: File, retryCount = 0): Promise<string> => {
+    const MAX_RETRIES = 2;
+    const TIMEOUT_MS = 60000; // 60 seconds total timeout
+    
+    // Pre-validation
+    if (file.size === 0) {
+      throw new Error(`File ${file.name} is empty`);
+    }
+    
+    if (file.size > 100 * 1024 * 1024) { // 100MB limit
+      throw new Error(`File ${file.name} is too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum size is 100MB.`);
+    }
 
     return new Promise((resolve, reject) => {
-      // Global timeout for entire file processing (90 seconds for large files)
-      const globalTimeoutId = setTimeout(() => {
-        reject(new Error(`⏱ File processing timeout (90s) - ${file.name} may be too large or corrupted`));
-      }, 90000);
+      const timeoutId = setTimeout(() => {
+        reject(new Error(`Processing timeout for ${file.name} after ${TIMEOUT_MS/1000}s`));
+      }, TIMEOUT_MS);
 
       const reader = new FileReader();
       
@@ -95,151 +197,140 @@ export const CVProcessor: React.FC = () => {
         try {
           const arrayBuffer = e.target?.result as ArrayBuffer;
           if (!arrayBuffer) {
-            throw new Error('📁 Failed to read file as ArrayBuffer');
+            throw new Error('Failed to read file as ArrayBuffer');
           }
 
-          // File size validation
           const fileSizeMB = arrayBuffer.byteLength / (1024 * 1024);
-          if (fileSizeMB > 50) {
-            console.warn(`⚠ Large file detected: ${fileSizeMB.toFixed(1)}MB`);
-          }
-
           const typedarray = new Uint8Array(arrayBuffer);
           
-          // Enhanced PDF.js configuration - worker-less mode for maximum compatibility
+          // Optimized PDF.js configuration based on file size and worker availability
           const loadingTask = pdfjsLib.getDocument({
             data: typedarray,
-            useWorkerFetch: false,
+            useWorkerFetch: workerInitialized,
             isEvalSupported: false,
-            disableAutoFetch: true,
-            disableStream: fileSizeMB > 10,
-            disableRange: true,
+            disableAutoFetch: fileSizeMB > 10,
+            disableStream: fileSizeMB > 5,
+            disableRange: fileSizeMB > 20,
             stopAtErrors: false,
-            maxImageSize: 2048 * 2048,
+            maxImageSize: fileSizeMB > 10 ? 1024 * 1024 : 2048 * 2048,
             cMapPacked: true,
             verbosity: 0,
-            password: '',
-            fontExtraProperties: true,
+            fontExtraProperties: false,
             enableXfa: false
           });
 
           let pdf;
           try {
-            // Longer timeout for large files
-            const loadTimeout = fileSizeMB > 10 ? 60000 : 40000;
-            pdf = await Promise.race([
-              loadingTask.promise,
-              new Promise((_, reject) => 
-                setTimeout(() => reject(new Error(`📄 PDF loading timeout (${loadTimeout/1000}s)`)), loadTimeout)
-              )
-            ]) as any;
-            
-            console.log(`📖 Loaded PDF: ${file.name} (${pdf.numPages} pages, ${fileSizeMB.toFixed(1)}MB)`);
+            pdf = await loadingTask.promise;
+            console.log(`📖 Loaded ${file.name}: ${pdf.numPages} pages, ${fileSizeMB.toFixed(1)}MB`);
           } catch (loadError) {
             loadingTask.destroy();
-            throw new Error(`📄 Failed to load PDF: ${loadError instanceof Error ? loadError.message : 'Unknown error'}`);
+            throw loadError;
           }
 
           let fullText = '';
-          const maxPages = Math.min(pdf.numPages, 25); // Process more pages for CVs
+          const maxPages = Math.min(pdf.numPages, 30);
           let processedPages = 0;
           let failedPages = 0;
           
-          console.log(`🔄 Processing ${maxPages} pages from ${file.name}`);
+          // Process pages in smaller batches to manage memory
+          const batchSize = fileSizeMB > 10 ? 3 : 5;
           
-          for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-            try {
-              const page = await Promise.race([
-                pdf.getPage(pageNum),
-                new Promise((_, reject) => 
-                  setTimeout(() => reject(new Error(`Page ${pageNum} loading timeout`)), 15000)
-                )
-              ]) as any;
-
-              const textContent = await Promise.race([
-                page.getTextContent({
+          for (let i = 0; i < maxPages; i += batchSize) {
+            const batchEnd = Math.min(i + batchSize, maxPages);
+            
+            for (let pageNum = i + 1; pageNum <= batchEnd; pageNum++) {
+              try {
+                const page = await pdf.getPage(pageNum);
+                const textContent = await page.getTextContent({
                   normalizeWhitespace: true,
                   disableCombineTextItems: false,
-                  includeMarkedContent: false // Skip marked content for performance
-                }),
-                new Promise((_, reject) => 
-                  setTimeout(() => reject(new Error(`Page ${pageNum} text extraction timeout`)), 15000)
-                )
-              ]) as any;
-              
-              // Enhanced text processing with better normalization
-              const pageText = textContent.items
-                .map((item: any) => {
-                  if (item.str && typeof item.str === 'string') {
-                    return item.str.trim();
-                  }
-                  return '';
-                })
-                .filter((str: string) => str.length > 0)
-                .join(' ')
-                .replace(/\s+/g, ' ')
-                .replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, ' '); // Replace various space characters
-              
-              if (pageText && pageText.length > 10) {
-                fullText += pageText + '\n';
-                processedPages++;
-              }
+                  includeMarkedContent: false
+                });
+                
+                const pageText = textContent.items
+                  .map((item: any) => item.str?.trim() || '')
+                  .filter((str: string) => str.length > 0)
+                  .join(' ')
+                  .replace(/\s+/g, ' ');
+                
+                if (pageText.length > 5) {
+                  fullText += pageText + '\n';
+                  processedPages++;
+                }
 
-              // Proper cleanup
-              page.cleanup();
-              
-            } catch (pageError) {
-              failedPages++;
-              console.warn(`⚠ Page ${pageNum} extraction failed:`, pageError);
-              
-              // If too many pages are failing, it might be an image-based PDF
-              if (failedPages > maxPages / 2) {
-                console.warn(`🖼 High page failure rate (${failedPages}/${pageNum}) - possibly image-based PDF`);
+                page.cleanup();
+                
+              } catch (pageError) {
+                failedPages++;
+                console.warn(`Page ${pageNum} failed:`, pageError);
+                
+                if (failedPages > maxPages * 0.7) {
+                  console.warn(`High failure rate - likely image-based PDF`);
+                  break;
+                }
               }
-              continue;
+            }
+            
+            // Force garbage collection between batches for large files
+            if (fileSizeMB > 20 && typeof window !== 'undefined' && (window as any).gc) {
+              (window as any).gc();
             }
           }
 
-          // Cleanup resources
+          // Cleanup
           pdf.cleanup();
           loadingTask.destroy();
-          clearTimeout(globalTimeoutId);
+          clearTimeout(timeoutId);
           
-          // Enhanced text validation and quality assessment
           const cleanText = fullText.trim().replace(/\s+/g, ' ');
-          const extractionQuality = {
-            totalPages: maxPages,
-            processedPages,
-            failedPages,
-            textLength: cleanText.length,
-            wordsCount: cleanText.split(' ').length
-          };
-          
-          console.log(`📊 Extraction quality for ${file.name}:`, extractionQuality);
           
           if (cleanText.length === 0) {
-            reject(new Error(`🚫 No readable text found in ${file.name}. This appears to be an image-based PDF or the file is corrupted. Consider using OCR tools.`));
-          } else if (cleanText.length < 100) {
-            console.warn(`⚠ Minimal text extracted from ${file.name}: ${cleanText.length} characters`);
-            if (failedPages > processedPages) {
-              reject(new Error(`📄 Very little text extracted (${cleanText.length} chars). This may be an image-based PDF requiring OCR.`));
-              return;
-            }
+            throw new Error(`No readable text found. File may be image-based or corrupted.`);
           }
           
+          if (cleanText.length < 50 && failedPages > processedPages) {
+            throw new Error(`Very little text extracted (${cleanText.length} chars). File may be image-based.`);
+          }
+          
+          console.log(`✅ Extracted ${cleanText.length} chars from ${processedPages} pages`);
           resolve(cleanText);
           
         } catch (error) {
-          clearTimeout(globalTimeoutId);
-          console.error(`💥 PDF extraction error for ${file.name}:`, error);
-          reject(new Error(`Failed to extract text from ${file.name}: ${error instanceof Error ? error.message : 'Unknown error'}`));
+          clearTimeout(timeoutId);
+          
+          // Retry logic for recoverable errors
+          const classifiedError = classifyError(error as Error, file.name);
+          
+          if (classifiedError.recoverable && retryCount < MAX_RETRIES) {
+            console.warn(`Retry ${retryCount + 1}/${MAX_RETRIES} for ${file.name}:`, error);
+            
+            // Re-initialize worker if it failed
+            if (classifiedError.type === ErrorType.CONFIGURATION && workerInitialized) {
+              workerInitialized = false;
+              await initializePDFWorker();
+            }
+            
+            // Wait before retry
+            await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
+            
+            try {
+              const result = await extractTextFromPDF(file, retryCount + 1);
+              resolve(result);
+              return;
+            } catch (retryError) {
+              // Continue to final rejection
+            }
+          }
+          
+          console.error(`PDF extraction failed for ${file.name}:`, error);
+          reject(new Error(classifiedError.userMessage));
         }
       };
       
-      reader.onerror = (error) => {
-        clearTimeout(globalTimeoutId);
-        console.error(`📁 FileReader error for ${file.name}:`, error);
-        reject(new Error(`Failed to read ${file.name} - file may be corrupted or access denied`));
+      reader.onerror = () => {
+        clearTimeout(timeoutId);
+        reject(new Error(`Failed to read ${file.name} - file may be corrupted`));
       };
       
       reader.readAsArrayBuffer(file);
@@ -454,8 +545,9 @@ export const CVProcessor: React.FC = () => {
   const processFiles = async () => {
     if (files.length === 0) return;
 
-    // Worker is automatically initialized on module load
-    addLog(`✅ PDF.js v${pdfjsLib.version} worker configured successfully`);
+    // Initialize PDF worker with fallback
+    await initializePDFWorker();
+    addLog(`✅ PDF.js v${pdfjsLib.version} initialized (worker: ${workerInitialized ? 'enabled' : 'disabled'})`);
 
     setIsProcessing(true);
     setExtractedData([]);
