@@ -14,28 +14,21 @@ import { Upload, FileText, Download, Settings, Activity } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as XLSX from 'xlsx';
 
-// Simplified PDF.js Worker Setup
+// Simplified PDF.js Worker Setup with Static Path
 const EXPECTED_VERSION = "4.0.379";
 
-// Direct worker assignment on module load - simplest approach
 console.log(`🔍 PDF.js API version: ${pdfjsLib.version}`);
 
-// Set worker source directly using CDN with version matching
-try {
-  // Use new URL constructor for proper module resolution
-  const workerUrl = new URL(
-    'pdfjs-dist/build/pdf.worker.min.js',
-    import.meta.url
-  ).toString();
-  
-  pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
-  console.log(`✅ PDF.js worker configured: ${workerUrl}`);
-} catch (error) {
-  // Fallback to CDN if module resolution fails
-  const fallbackUrl = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.js`;
-  pdfjsLib.GlobalWorkerOptions.workerSrc = fallbackUrl;
-  console.log(`🔄 Using CDN fallback worker: ${fallbackUrl}`);
-}
+// Use direct static path to avoid Vite bundling issues
+const workerSources = [
+  '/pdf.worker.js', // Local static file (highest priority)
+  `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.js`, // CDN fallback
+  'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.js' // Alternative CDN
+];
+
+// Set the first available worker source
+pdfjsLib.GlobalWorkerOptions.workerSrc = workerSources[0];
+console.log(`✅ PDF.js worker configured: ${workerSources[0]}`);
 
 interface ExtractedData {
   filename: string;
