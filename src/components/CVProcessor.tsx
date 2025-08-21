@@ -14,15 +14,15 @@ import { Upload, FileText, Download, Settings, Activity } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as XLSX from 'xlsx';
 
-// PDF.js Worker Setup - Use CDN directly to avoid Vite bundling issues
+// PDF.js Worker Setup - Worker-less mode for maximum compatibility
 const EXPECTED_VERSION = "4.0.379";
 
 console.log(`🔍 PDF.js API version: ${pdfjsLib.version}`);
 
-// Use direct CDN URL - this avoids all Vite bundling/module resolution issues
-const workerUrl = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.js`;
-pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
-console.log(`✅ PDF.js worker configured with CDN: ${workerUrl}`);
+// Disable worker for maximum compatibility and to avoid all worker loading issues
+pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+pdfjsLib.GlobalWorkerOptions.workerPort = null;
+console.log(`✅ PDF.js configured in worker-less mode for maximum compatibility`);
 
 interface ExtractedData {
   filename: string;
@@ -109,7 +109,7 @@ export const CVProcessor: React.FC = () => {
 
           const typedarray = new Uint8Array(arrayBuffer);
           
-          // Enhanced PDF.js configuration for better compatibility
+          // Enhanced PDF.js configuration - worker-less mode for maximum compatibility
           const loadingTask = pdfjsLib.getDocument({
             data: typedarray,
             useWorkerFetch: false,
@@ -122,8 +122,9 @@ export const CVProcessor: React.FC = () => {
             cMapPacked: true,
             verbosity: 0, // Reduce console noise
             password: '', // Handle password-protected PDFs gracefully
-            cMapUrl: `https://unpkg.com/pdfjs-dist@${EXPECTED_VERSION}/cmaps/`,
-            standardFontDataUrl: `https://unpkg.com/pdfjs-dist@${EXPECTED_VERSION}/standard_fonts/`,
+            // Remove external CDN dependencies - use local resources only
+            cMapUrl: null,
+            standardFontDataUrl: null,
             fontExtraProperties: true,
             enableXfa: false // Disable XFA forms for performance
           });
