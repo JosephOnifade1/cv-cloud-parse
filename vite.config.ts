@@ -19,8 +19,15 @@ export default defineConfig(({ mode }) => ({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  build: {
+    target: ['es2022', 'chrome89', 'firefox89', 'safari15'],
+    rollupOptions: {
+      external: ['pdfjs-dist/build/pdf.worker.js']
+    }
+  },
   optimizeDeps: {
-    include: ['pdfjs-dist']
+    include: ['pdfjs-dist'],
+    force: true
   },
   define: {
     global: 'globalThis',

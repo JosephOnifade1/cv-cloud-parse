@@ -13,7 +13,8 @@ import { ProcessingLog } from './ProcessingLog';
 import { Upload, FileText, Download, Settings, Activity } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 
-// Configure PDF.js worker with better error handling
+// PDF.js worker configuration with version validation
+const EXPECTED_VERSION = "4.0.379";
 let isWorkerSetup = false;
 let workerSetupPromise: Promise<void> | null = null;
 
@@ -23,21 +24,26 @@ const setupPDFWorker = () => {
 
   workerSetupPromise = (async () => {
     try {
-      // Updated CDN URLs for stable PDF.js version
+      // Version validation
+      if (pdfjsLib.version !== EXPECTED_VERSION) {
+        console.warn(`⚠ PDF.js version mismatch: expected ${EXPECTED_VERSION}, got ${pdfjsLib.version}`);
+      }
+
+      // Version-specific worker URLs with exact matching
       const workerUrls = [
-        `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`,
-        `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.js`,
-        `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.js`,
-        '/pdf.worker.js'
+        '/pdf.worker.js', // Local worker file (primary)
+        `https://unpkg.com/pdfjs-dist@${EXPECTED_VERSION}/build/pdf.worker.min.js`,
+        `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${EXPECTED_VERSION}/pdf.worker.min.js`,
+        `https://cdn.jsdelivr.net/npm/pdfjs-dist@${EXPECTED_VERSION}/build/pdf.worker.min.js`
       ];
 
       let workerConfigured = false;
 
-      // Try each worker URL with better error handling
+      // Try each worker URL with enhanced error handling and version validation
       for (const url of workerUrls) {
         try {
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 5000);
+          const timeoutId = setTimeout(() => controller.abort(), 8000);
           
           const response = await fetch(url, { 
             method: 'HEAD',
@@ -50,29 +56,30 @@ const setupPDFWorker = () => {
           if (response.ok) {
             pdfjsLib.GlobalWorkerOptions.workerSrc = url;
             workerConfigured = true;
-            console.log(`✓ PDF.js worker configured with: ${url}`);
+            console.log(`✅ PDF.js v${pdfjsLib.version} worker configured: ${url}`);
             break;
           }
         } catch (error) {
-          console.warn(`Failed to load worker from ${url}:`, error);
+          console.warn(`❌ Worker failed from ${url}:`, error);
           continue;
         }
       }
 
-      // Better fallback handling - just disable worker without modifying imports
+      // Enhanced fallback with worker-less mode
       if (!workerConfigured) {
-        console.warn('⚠ All worker URLs failed, using legacy mode');
+        console.warn('⚠ All worker URLs failed - enabling worker-less mode');
         pdfjsLib.GlobalWorkerOptions.workerSrc = null;
-        // Set a flag on window object instead of modifying imports
         (window as any).__PDFJS_DISABLE_WORKER__ = true;
+        console.log('🔄 PDF.js running in compatibility mode without worker');
       }
 
       isWorkerSetup = true;
     } catch (error) {
-      console.error('Worker setup failed:', error);
+      console.error('💥 Critical worker setup failure:', error);
       pdfjsLib.GlobalWorkerOptions.workerSrc = null;
       (window as any).__PDFJS_DISABLE_WORKER__ = true;
       isWorkerSetup = true;
+      throw error; // Re-throw to be caught by calling code
     }
   })();
 
@@ -142,12 +149,18 @@ export const CVProcessor: React.FC = () => {
   }, [addLog]);
 
   const extractTextFromPDF = async (file: File): Promise<string> => {
-    await setupPDFWorker();
+    // Ensure worker is properly initialized
+    try {
+      await setupPDFWorker();
+    } catch (workerError) {
+      console.warn('⚠ Worker setup failed, attempting processing anyway:', workerError);
+    }
 
     return new Promise((resolve, reject) => {
+      // Global timeout for entire file processing (90 seconds for large files)
       const globalTimeoutId = setTimeout(() => {
-        reject(new Error('PDF processing timeout - file may be too large or corrupted'));
-      }, 60000);
+        reject(new Error(`⏱ File processing timeout (90s) - ${file.name} may be too large or corrupted`));
+      }, 90000);
 
       const reader = new FileReader();
       
@@ -155,63 +168,81 @@ export const CVProcessor: React.FC = () => {
         try {
           const arrayBuffer = e.target?.result as ArrayBuffer;
           if (!arrayBuffer) {
-            throw new Error('Failed to read file as ArrayBuffer');
+            throw new Error('📁 Failed to read file as ArrayBuffer');
+          }
+
+          // File size validation
+          const fileSizeMB = arrayBuffer.byteLength / (1024 * 1024);
+          if (fileSizeMB > 50) {
+            console.warn(`⚠ Large file detected: ${fileSizeMB.toFixed(1)}MB`);
           }
 
           const typedarray = new Uint8Array(arrayBuffer);
           
+          // Enhanced PDF.js configuration for better compatibility
           const loadingTask = pdfjsLib.getDocument({
             data: typedarray,
             useWorkerFetch: false,
             isEvalSupported: false,
             disableAutoFetch: true,
-            disableStream: true,
+            disableStream: fileSizeMB > 10, // Disable streaming for large files
             disableRange: true,
             stopAtErrors: false,
-            maxImageSize: 1024 * 1024,
+            maxImageSize: 2048 * 2048, // Increased for better quality
             cMapPacked: true,
-            verbosity: 0,
-            password: '',
-            cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/cmaps/`,
-            standardFontDataUrl: `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/standard_fonts/`
+            verbosity: 0, // Reduce console noise
+            password: '', // Handle password-protected PDFs gracefully
+            cMapUrl: `https://unpkg.com/pdfjs-dist@${EXPECTED_VERSION}/cmaps/`,
+            standardFontDataUrl: `https://unpkg.com/pdfjs-dist@${EXPECTED_VERSION}/standard_fonts/`,
+            fontExtraProperties: true,
+            enableXfa: false // Disable XFA forms for performance
           });
 
           let pdf;
           try {
+            // Longer timeout for large files
+            const loadTimeout = fileSizeMB > 10 ? 60000 : 40000;
             pdf = await Promise.race([
               loadingTask.promise,
               new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('PDF loading timeout')), 30000)
+                setTimeout(() => reject(new Error(`📄 PDF loading timeout (${loadTimeout/1000}s)`)), loadTimeout)
               )
             ]) as any;
+            
+            console.log(`📖 Loaded PDF: ${file.name} (${pdf.numPages} pages, ${fileSizeMB.toFixed(1)}MB)`);
           } catch (loadError) {
             loadingTask.destroy();
-            throw new Error(`Failed to load PDF: ${loadError instanceof Error ? loadError.message : 'Unknown error'}`);
+            throw new Error(`📄 Failed to load PDF: ${loadError instanceof Error ? loadError.message : 'Unknown error'}`);
           }
 
           let fullText = '';
-          const maxPages = Math.min(pdf.numPages, 20);
-          console.log(`Processing ${maxPages} pages from ${file.name}`);
+          const maxPages = Math.min(pdf.numPages, 25); // Process more pages for CVs
+          let processedPages = 0;
+          let failedPages = 0;
+          
+          console.log(`🔄 Processing ${maxPages} pages from ${file.name}`);
           
           for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
             try {
               const page = await Promise.race([
                 pdf.getPage(pageNum),
                 new Promise((_, reject) => 
-                  setTimeout(() => reject(new Error(`Page ${pageNum} timeout`)), 10000)
+                  setTimeout(() => reject(new Error(`Page ${pageNum} loading timeout`)), 15000)
                 )
               ]) as any;
 
               const textContent = await Promise.race([
                 page.getTextContent({
                   normalizeWhitespace: true,
-                  disableCombineTextItems: false
+                  disableCombineTextItems: false,
+                  includeMarkedContent: false // Skip marked content for performance
                 }),
                 new Promise((_, reject) => 
-                  setTimeout(() => reject(new Error(`Page ${pageNum} text extraction timeout`)), 10000)
+                  setTimeout(() => reject(new Error(`Page ${pageNum} text extraction timeout`)), 15000)
                 )
               ]) as any;
               
+              // Enhanced text processing with better normalization
               const pageText = textContent.items
                 .map((item: any) => {
                   if (item.str && typeof item.str === 'string') {
@@ -221,45 +252,69 @@ export const CVProcessor: React.FC = () => {
                 })
                 .filter((str: string) => str.length > 0)
                 .join(' ')
-                .replace(/\s+/g, ' ');
+                .replace(/\s+/g, ' ')
+                .replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, ' '); // Replace various space characters
               
-              if (pageText) {
+              if (pageText && pageText.length > 10) {
                 fullText += pageText + '\n';
+                processedPages++;
               }
 
+              // Proper cleanup
               page.cleanup();
               
             } catch (pageError) {
-              console.warn(`Failed to extract text from page ${pageNum}:`, pageError);
+              failedPages++;
+              console.warn(`⚠ Page ${pageNum} extraction failed:`, pageError);
+              
+              // If too many pages are failing, it might be an image-based PDF
+              if (failedPages > maxPages / 2) {
+                console.warn(`🖼 High page failure rate (${failedPages}/${pageNum}) - possibly image-based PDF`);
+              }
               continue;
             }
           }
 
+          // Cleanup resources
           pdf.cleanup();
           loadingTask.destroy();
-          
           clearTimeout(globalTimeoutId);
           
+          // Enhanced text validation and quality assessment
           const cleanText = fullText.trim().replace(/\s+/g, ' ');
+          const extractionQuality = {
+            totalPages: maxPages,
+            processedPages,
+            failedPages,
+            textLength: cleanText.length,
+            wordsCount: cleanText.split(' ').length
+          };
+          
+          console.log(`📊 Extraction quality for ${file.name}:`, extractionQuality);
+          
           if (cleanText.length === 0) {
-            reject(new Error('No readable text content found in PDF. This might be an image-based PDF or the file may be corrupted.'));
-          } else if (cleanText.length < 50) {
-            console.warn(`Very little text extracted from ${file.name}: ${cleanText.length} characters`);
+            reject(new Error(`🚫 No readable text found in ${file.name}. This appears to be an image-based PDF or the file is corrupted. Consider using OCR tools.`));
+          } else if (cleanText.length < 100) {
+            console.warn(`⚠ Minimal text extracted from ${file.name}: ${cleanText.length} characters`);
+            if (failedPages > processedPages) {
+              reject(new Error(`📄 Very little text extracted (${cleanText.length} chars). This may be an image-based PDF requiring OCR.`));
+              return;
+            }
           }
           
           resolve(cleanText);
           
         } catch (error) {
           clearTimeout(globalTimeoutId);
-          console.error('PDF extraction error:', error);
-          reject(new Error(`Failed to extract text from PDF: ${error instanceof Error ? error.message : 'Unknown error'}`));
+          console.error(`💥 PDF extraction error for ${file.name}:`, error);
+          reject(new Error(`Failed to extract text from ${file.name}: ${error instanceof Error ? error.message : 'Unknown error'}`));
         }
       };
       
       reader.onerror = (error) => {
         clearTimeout(globalTimeoutId);
-        console.error('FileReader error:', error);
-        reject(new Error('Failed to read file - file may be corrupted'));
+        console.error(`📁 FileReader error for ${file.name}:`, error);
+        reject(new Error(`Failed to read ${file.name} - file may be corrupted or access denied`));
       };
       
       reader.readAsArrayBuffer(file);
@@ -474,65 +529,90 @@ export const CVProcessor: React.FC = () => {
   const processFiles = async () => {
     if (files.length === 0) return;
 
+    // Enhanced worker initialization with better error handling
     try {
       await setupPDFWorker();
-      addLog('✓ PDF.js worker initialized successfully');
+      addLog('✅ PDF.js v4.0.379 worker initialized successfully');
     } catch (error) {
       addLog('⚠ PDF.js worker setup had issues, continuing with fallback mode');
+      console.warn('Worker initialization warning:', error);
     }
 
     setIsProcessing(true);
     setExtractedData([]);
     setStats({ total: files.length, processed: 0, successful: 0, failed: 0 });
-    addLog(`🚀 Starting processing of ${files.length} files`);
+    addLog(`🚀 Starting batch processing of ${files.length} files`);
 
     const results: ExtractedData[] = [];
+    let batchStartTime = Date.now();
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
+      const fileStartTime = Date.now();
+      
       setStats(prev => ({ ...prev, currentFile: file.name }));
-      addLog(`📄 Processing file ${i + 1}/${files.length}: ${file.name}`);
+      addLog(`📄 Processing file ${i + 1}/${files.length}: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
 
       try {
+        // Enhanced file processing with comprehensive validation
         const fileProcessingPromise = (async () => {
+          // Pre-flight validation
           if (file.size === 0) {
-            throw new Error('File is empty');
+            throw new Error('File is empty (0 bytes)');
           }
           if (file.size > 50 * 1024 * 1024) {
-            throw new Error('File too large (>50MB)');
+            throw new Error(`File too large (${(file.size / 1024 / 1024).toFixed(1)}MB > 50MB limit)`);
+          }
+          if (!file.type.includes('pdf')) {
+            throw new Error(`Invalid file type: ${file.type} (expected PDF)`);
           }
           
+          // Extract text with enhanced error context
           const text = await extractTextFromPDF(file);
           
           if (!text || text.trim().length === 0) {
-            throw new Error('No text content extracted from PDF');
+            throw new Error('No text content extracted - PDF may be image-based or corrupted');
           }
           
-          if (text.length < 10) {
-            throw new Error('Extracted text is too short - likely not a valid CV');
+          if (text.length < 50) {
+            throw new Error(`Extracted text too short (${text.length} chars) - likely not a valid CV`);
           }
           
+          // Extract structured data
           const extractedData = extractDataFromText(text, file.name);
           
-          const hasData = extractedData.firstName || extractedData.email || 
-                         extractedData.phone || extractedData.skills?.length ||
-                         extractedData.currentRole || extractedData.location;
+          // Data quality validation
+          const hasBasicData = extractedData.firstName || extractedData.email || extractedData.phone;
+          const hasDetailedData = extractedData.skills?.length || extractedData.currentRole || extractedData.experience;
           
-          if (!hasData) {
+          if (!hasBasicData && !hasDetailedData) {
             extractedData.status = 'error';
-            extractedData.errorMessage = 'No recognizable CV data found in the PDF';
+            extractedData.errorMessage = 'No recognizable CV data found - check if this is a valid resume PDF';
+          } else {
+            // Log extraction quality
+            const dataFields = [
+              extractedData.firstName, extractedData.lastName, extractedData.email,
+              extractedData.phone, extractedData.location, extractedData.currentRole,
+              extractedData.skills?.length, extractedData.education, extractedData.experience,
+              extractedData.about, extractedData.languages?.length
+            ].filter(Boolean).length;
+            
+            console.log(`📊 Data extraction quality for ${file.name}: ${dataFields}/11 fields extracted`);
           }
           
           return extractedData;
         })();
 
+        // File-specific timeout with size-based adjustment
+        const timeoutMs = Math.min(90000, Math.max(30000, file.size / 1024 / 1024 * 5000)); // 5s per MB, 30-90s range
         const timeoutPromise = new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error('File processing timeout (90s) - file may be very large or complex')), 90000);
+          setTimeout(() => reject(new Error(`File processing timeout (${timeoutMs/1000}s) - file may be very large or complex`)), timeoutMs);
         });
 
         const extractedData = await Promise.race([fileProcessingPromise, timeoutPromise]);
         results.push(extractedData);
 
+        // Update statistics
         setStats(prev => ({
           ...prev,
           processed: i + 1,
@@ -540,17 +620,22 @@ export const CVProcessor: React.FC = () => {
           failed: prev.failed + (extractedData.status === 'error' ? 1 : 0)
         }));
 
+        // Detailed logging with timing
+        const processingTime = ((Date.now() - fileStartTime) / 1000).toFixed(1);
         if (extractedData.status === 'success') {
-          addLog(`✅ Successfully processed: ${file.name}`);
+          addLog(`✅ Successfully processed: ${file.name} (${processingTime}s)`);
         } else {
-          addLog(`⚠️ Processed with issues: ${file.name} - ${extractedData.errorMessage}`);
+          addLog(`⚠️ Processed with issues: ${file.name} - ${extractedData.errorMessage} (${processingTime}s)`);
         }
         
       } catch (error) {
+        const processingTime = ((Date.now() - fileStartTime) / 1000).toFixed(1);
+        const errorMessage = error instanceof Error ? error.message : 'Unknown processing error';
+        
         const errorData: ExtractedData = {
           filename: file.name,
           status: 'error',
-          errorMessage: error instanceof Error ? error.message : 'Unknown processing error'
+          errorMessage
         };
         results.push(errorData);
 
@@ -560,22 +645,32 @@ export const CVProcessor: React.FC = () => {
           failed: prev.failed + 1
         }));
 
-        addLog(`❌ Failed to process: ${file.name} - ${errorData.errorMessage}`);
+        addLog(`❌ Failed to process: ${file.name} - ${errorMessage} (${processingTime}s)`);
+        console.error(`Processing error for ${file.name}:`, error);
       }
 
+      // Update results in real-time
       setExtractedData([...results]);
 
+      // Memory management: small pause between files to prevent browser overload
       if (i < files.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 200));
+        await new Promise(resolve => setTimeout(resolve, 300));
       }
     }
 
+    // Final statistics and cleanup
     setStats(prev => ({ ...prev, currentFile: undefined }));
     setIsProcessing(false);
     
     const successful = results.filter(r => r.status === 'success').length;
     const failed = results.filter(r => r.status === 'error').length;
-    addLog(`🏁 Processing completed! ${successful} successful, ${failed} failed out of ${files.length} total files.`);
+    const batchTime = ((Date.now() - batchStartTime) / 1000).toFixed(1);
+    
+    addLog(`🏁 Batch processing completed in ${batchTime}s! ✅ ${successful} successful, ❌ ${failed} failed out of ${files.length} total files.`);
+    
+    // Performance summary
+    const avgTimePerFile = (Date.now() - batchStartTime) / files.length / 1000;
+    console.log(`📈 Batch performance: ${avgTimePerFile.toFixed(1)}s avg per file, ${(successful/files.length*100).toFixed(1)}% success rate`);
   };
 
   const exportToCSV = () => {
@@ -692,9 +787,9 @@ export const CVProcessor: React.FC = () => {
                     <Button 
                       onClick={processFiles} 
                       disabled={isProcessing}
-                      variant="gradient"
+                      variant="default"
                       size="lg"
-                      className="flex-1"
+                      className="flex-1 bg-primary text-primary-foreground hover:bg-primary/90"
                     >
                       {isProcessing ? 'Processing...' : 'Start Processing'}
                     </Button>
