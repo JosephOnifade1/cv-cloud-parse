@@ -14,152 +14,28 @@ import { Upload, FileText, Download, Settings, Activity } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as XLSX from 'xlsx';
 
-// PDF.js Worker Setup with Enhanced Version Management
+// Simplified PDF.js Worker Setup
 const EXPECTED_VERSION = "4.0.379";
-let isWorkerSetup = false;
-let workerSetupPromise: Promise<void> | null = null;
 
-// Version compatibility check
-const checkVersionCompatibility = (): boolean => {
-  const currentVersion = pdfjsLib.version;
-  if (currentVersion !== EXPECTED_VERSION) {
-    console.warn(`⚠ Version mismatch detected: API=${currentVersion}, Expected=${EXPECTED_VERSION}`);
-    return false;
-  }
-  console.log(`✅ Version compatibility verified: ${currentVersion}`);
-  return true;
-};
+// Direct worker assignment on module load - simplest approach
+console.log(`🔍 PDF.js API version: ${pdfjsLib.version}`);
 
-// Verify worker is actually working
-const verifyWorkerFunctionality = async (): Promise<boolean> => {
-  try {
-    // Create a minimal PDF document to test worker
-    const testPdfData = new Uint8Array([
-      0x25, 0x50, 0x44, 0x46, 0x2D, 0x31, 0x2E, 0x34, 0x0A, 0x25, 0xC7, 0xEC, 0x8F, 0xA2, 0x0A
-    ]);
-    
-    const loadingTask = pdfjsLib.getDocument({ data: testPdfData });
-    const pdf = await loadingTask.promise;
-    await pdf.destroy();
-    console.log('✅ Worker functionality verified');
-    return true;
-  } catch (error) {
-    console.warn('⚠ Worker functionality test failed:', error);
-    return false;
-  }
-};
-
-const setupPDFWorker = () => {
-  if (typeof window === 'undefined') return Promise.resolve();
-  if (isWorkerSetup) return Promise.resolve();
-  if (workerSetupPromise) return workerSetupPromise;
-
-  workerSetupPromise = (async () => {
-    try {
-      console.log(`🔍 PDF.js API version: ${pdfjsLib.version}`);
-      
-      // Check version compatibility first
-      const isVersionCompatible = checkVersionCompatibility();
-      if (!isVersionCompatible) {
-        console.warn('⚠ Version mismatch detected - proceeding with caution');
-      }
-      
-      // Worker URLs in priority order (local first for reliability)
-      const workerUrls = [
-        '/pdf.worker.js', // Local file (now correct version 4.0.379)
-        `https://unpkg.com/pdfjs-dist@${EXPECTED_VERSION}/build/pdf.worker.min.js`,
-        `https://cdn.jsdelivr.net/npm/pdfjs-dist@${EXPECTED_VERSION}/build/pdf.worker.min.js`,
-        `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${EXPECTED_VERSION}/pdf.worker.min.js`
-      ];
-
-      let workerConfigured = false;
-      let retryCount = 0;
-      const maxRetries = 2;
-
-      // Try each worker URL with retry logic
-      for (const url of workerUrls) {
-        let currentRetries = 0;
-        
-        while (currentRetries <= maxRetries && !workerConfigured) {
-          try {
-            console.log(`🔄 Attempting worker setup: ${url} (attempt ${currentRetries + 1})`);
-            
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 8000);
-            
-            // Test if worker URL is accessible
-            const response = await fetch(url, { 
-              method: 'HEAD',
-              signal: controller.signal,
-              cache: 'force-cache' // Use cache for performance
-            });
-            
-            clearTimeout(timeoutId);
-            
-            if (response.ok) {
-              // Set the worker source
-              pdfjsLib.GlobalWorkerOptions.workerSrc = url;
-              
-              // Verify worker actually works with a test
-              const workerFunctional = await verifyWorkerFunctionality();
-              
-              if (workerFunctional) {
-                console.log(`✅ PDF.js worker configured and verified: ${url}`);
-                workerConfigured = true;
-                break;
-              } else {
-                console.warn(`⚠ Worker URL accessible but not functional: ${url}`);
-                currentRetries++;
-                if (currentRetries <= maxRetries) {
-                  await new Promise(resolve => setTimeout(resolve, 1000 * currentRetries)); // Exponential backoff
-                }
-              }
-            } else {
-              throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-            }
-          } catch (error) {
-            currentRetries++;
-            console.log(`❌ Worker setup attempt ${currentRetries} failed for ${url}:`, error instanceof Error ? error.message : error);
-            
-            if (currentRetries <= maxRetries) {
-              await new Promise(resolve => setTimeout(resolve, 1000 * currentRetries)); // Exponential backoff
-            }
-          }
-        }
-        
-        if (workerConfigured) break;
-      }
-
-      // Final fallback strategies
-      if (!workerConfigured) {
-        console.warn('⚠ All worker URLs failed - implementing emergency fallback');
-        
-        // Set to the local worker file we just downloaded as absolute fallback
-        pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.js';
-        console.log('🚨 Applied absolute final fallback to local worker');
-      }
-
-      isWorkerSetup = true;
-      console.log('🎯 PDF.js worker setup completed');
-      
-    } catch (error) {
-      console.error('💥 Critical worker setup failure:', error);
-      
-      // Absolute final fallback - ensure workerSrc is never undefined
-      if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
-        pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.js';
-        console.log('🚨 Applied absolute final fallback worker');
-      }
-      
-      isWorkerSetup = true;
-    }
-  })();
-
-  return workerSetupPromise;
-};
-
-// Initialize worker setup
-setupPDFWorker();
+// Set worker source directly using CDN with version matching
+try {
+  // Use new URL constructor for proper module resolution
+  const workerUrl = new URL(
+    'pdfjs-dist/build/pdf.worker.min.js',
+    import.meta.url
+  ).toString();
+  
+  pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+  console.log(`✅ PDF.js worker configured: ${workerUrl}`);
+} catch (error) {
+  // Fallback to CDN if module resolution fails
+  const fallbackUrl = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.js`;
+  pdfjsLib.GlobalWorkerOptions.workerSrc = fallbackUrl;
+  console.log(`🔄 Using CDN fallback worker: ${fallbackUrl}`);
+}
 
 interface ExtractedData {
   filename: string;
@@ -221,12 +97,7 @@ export const CVProcessor: React.FC = () => {
   }, [addLog]);
 
   const extractTextFromPDF = async (file: File): Promise<string> => {
-    // Ensure worker is properly initialized
-    try {
-      await setupPDFWorker();
-    } catch (workerError) {
-      console.warn('⚠ Worker setup failed, attempting processing anyway:', workerError);
-    }
+    // Worker is now automatically configured on module load
 
     return new Promise((resolve, reject) => {
       // Global timeout for entire file processing (90 seconds for large files)
@@ -601,14 +472,8 @@ export const CVProcessor: React.FC = () => {
   const processFiles = async () => {
     if (files.length === 0) return;
 
-    // Enhanced worker initialization with better error handling
-    try {
-      await setupPDFWorker();
-      addLog('✅ PDF.js v4.0.379 worker initialized successfully');
-    } catch (error) {
-      addLog('⚠ PDF.js worker setup had issues, continuing with fallback mode');
-      console.warn('Worker initialization warning:', error);
-    }
+    // Worker is automatically initialized on module load
+    addLog(`✅ PDF.js v${pdfjsLib.version} worker configured successfully`);
 
     setIsProcessing(true);
     setExtractedData([]);

@@ -22,13 +22,19 @@ export default defineConfig(({ mode }) => ({
   build: {
     target: ['es2022', 'chrome89', 'firefox89', 'safari15'],
     rollupOptions: {
-      external: ['pdfjs-dist/build/pdf.worker.js']
+      output: {
+        manualChunks: {
+          pdfjs: ['pdfjs-dist']
+        }
+      }
     }
   },
   optimizeDeps: {
-    include: ['pdfjs-dist'],
+    include: ['pdfjs-dist/build/pdf.min.js'],
+    exclude: ['pdfjs-dist/build/pdf.worker.js'],
     force: true
   },
+  assetsInclude: ['**/*.worker.js'],
   define: {
     global: 'globalThis',
   },
