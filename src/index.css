@@ -86,7 +86,7 @@ All colors MUST be HSL.
     --primary: 30 58% 55%;
     --primary-foreground: 255 255 255;
 
-    --secondary: 51 65 85;
+    --secondary: 51 65% 85%;
     --secondary-foreground: 248 250 252;
 
     --muted: 30 41% 9%;
@@ -104,8 +104,8 @@ All colors MUST be HSL.
     --warning: 43 96% 56%;
     --warning-foreground: 255 255 255;
 
-    --border: 51 65 85;
-    --input: 51 65 85;
+    --border: 51 65% 85%;
+    --input: 51 65% 85%;
     --ring: 30 58% 55%;
 
     --gradient-primary: linear-gradient(135deg, hsl(220 80% 40%) 0%, hsl(210 75% 35%) 100%);
