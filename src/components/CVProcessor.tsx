@@ -14,12 +14,12 @@ import { Upload, FileText, Download, Settings, Activity } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as XLSX from 'xlsx';
 
-// IMMEDIATE PDF.js Worker Setup - Configure immediately when component loads
-pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.js';
+// SAFE PDF.js Worker Setup - Use worker-less mode for stability
+pdfjsLib.GlobalWorkerOptions.workerSrc = '';
 
 const EXPECTED_VERSION = "4.0.379";
 console.log(`🔍 PDF.js API version: ${pdfjsLib.version}`);
-console.log(`✅ PDF.js worker configured: /pdf.worker.min.js`);
+console.log(`✅ PDF.js worker-less mode configured for stability`);
 
 interface ExtractedData {
   filename: string;
